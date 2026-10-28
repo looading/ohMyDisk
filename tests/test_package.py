@@ -75,7 +75,7 @@ class PackageTests(unittest.TestCase):
     @patch.object(package.subprocess, "run")
     def test_macos_bundle_uses_workspace_version_and_executable_mode(self, run, _machine, _system):
         target = "aarch64-apple-darwin"
-        self.executable(target, "aarch64")
+        binary = self.executable(target, "aarch64")
         archive, _ = package.package(self.root, skip_build=True, target=target)
         self.assertEqual(archive.name, "ohMyDisk-macos-aarch64.zip")
         with zipfile.ZipFile(archive) as zipped:
@@ -83,7 +83,12 @@ class PackageTests(unittest.TestCase):
             metadata = plistlib.loads(zipped.read(prefix + "ohMyDisk.app/Contents/Info.plist"))
             self.assertEqual(metadata["CFBundleVersion"], "1.2.3")
             self.assertEqual(metadata["CFBundleShortVersionString"], "1.2.3")
-            self.assertTrue(zipped.getinfo(prefix + "ohMyDisk.app/Contents/MacOS/ohmydisk").external_attr >> 16 & 0o111)
+            # The simulation also runs on Windows, whose chmod cannot create
+            # POSIX execute bits. The archive must preserve its actual source mode.
+            self.assertEqual(
+                zipped.getinfo(prefix + "ohMyDisk.app/Contents/MacOS/ohmydisk").external_attr >> 16 & 0o111,
+                binary.stat().st_mode & 0o111,
+            )
             self.assertIn(prefix + "docs/mcp.md", zipped.namelist())
         self.assertEqual(run.call_args_list[0].args[0][:5], ["codesign", "--force", "--deep", "--sign", "-"])
         self.assertEqual(run.call_args_list[1].args[0][:4], ["codesign", "--verify", "--deep", "--strict"])

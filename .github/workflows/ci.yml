@@ -62,8 +62,9 @@ jobs:
           rustup default stable
           rustup target add "${{ matrix.target }}"
           echo "version=$(rustc --version)" >> "$GITHUB_OUTPUT"
-      - name: Cache Cargo dependencies and build outputs
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      - name: Restore Cargo dependencies and build outputs
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
@@ -98,6 +99,15 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
+      - name: Save Cargo dependencies and partial build outputs
+        if: always() && !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   release:
     name: Publish GitHub Release
