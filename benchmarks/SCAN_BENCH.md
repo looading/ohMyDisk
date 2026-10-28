@@ -46,6 +46,9 @@ total regular files and the minimum/maximum file sizes. Link creation
 depends on filesystem and OS permissions; the report records availability and
 actual inventory. Relative links include a directory cycle and dangling link.
 The scanner should retain each link as a boundary without traversing it.
+Repeated same-filesystem directory identities are also retained as incomplete
+boundaries with zero logical size and are not traversed again. This avoids
+counting firmlink/mount aliases and directory cycles multiple times.
 Hardlinks count their full logical size once per directory entry, matching scan
 semantics. A mixed scan with symlinks is expected to report `complete: false`
 because boundary issues make the snapshot incomplete.
@@ -218,3 +221,11 @@ interruptible timer so scans that complete before N do not wait for N to elapse.
 
 For the manually triggered native Windows/macOS workflow and its fixed
 default-versus-portable comparison, see [BENCHMARK_CI.md](BENCHMARK_CI.md).
+
+
+Starting with v0.1.2, real roots containing repeated directory identities can
+intentionally differ from the v0.1.0/v0.1.1 reference scanner: the old version
+could traverse those aliases repeatedly. Such roots must not be used to claim
+old/new semantic parity. Generated fixtures contain distinct directories, so
+their parity comparisons remain valid. Regular-file hardlinks continue to count
+logical size per directory entry.

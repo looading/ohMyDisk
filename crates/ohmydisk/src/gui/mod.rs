@@ -29,7 +29,11 @@ const WARNING: Color = Color::from_rgb(0.96, 0.69, 0.39);
 
 pub fn run(data_dir: PathBuf) -> iced::Result {
     let mut app = iced::application(move || App::new(data_dir.clone()), App::update, App::view)
-        .title("ohMyDisk · 空间，清晰可见")
+        .title(concat!(
+            "ohMyDisk v",
+            env!("CARGO_PKG_VERSION"),
+            " · 空间，清晰可见"
+        ))
         .subscription(App::subscription)
         .theme(Theme::Dark)
         .default_font(chinese_font())
@@ -584,7 +588,7 @@ impl App {
                         if let Some(active) = &mut self.active {
                             active.state = job.state.clone();
                             active.progress = format!(
-                                "{} · {} 个文件 · {} 个文件夹 · {} · {} 秒",
+                                "{} · {} 个文件 · {} 个文件夹 · 逻辑大小 {} · {} 秒",
                                 phase_label(&job.progress.phase),
                                 job.progress.files,
                                 job.progress.directories,
@@ -654,6 +658,7 @@ impl App {
                     Ok(scan) => {
                         let Some(root) = scan.root_id.clone() else {
                             self.loading = false;
+                            let status = scan_size_summary(&scan);
                             if let Some(id) = scan.job_id {
                                 if scan.state.as_deref().is_some_and(|state| {
                                     matches!(state, "queued" | "running" | "cancel_requested")
@@ -669,7 +674,7 @@ impl App {
                                         "已接续这个后台扫描，可在此查看进度或请求停止。".into(),
                                     );
                                 } else {
-                                    self.banner = Some("这个扫描尚未生成可浏览的快照。".into());
+                                    self.banner = Some(status);
                                 }
                             }
                             return Task::none();
@@ -1109,7 +1114,7 @@ impl App {
             } else {
                 0.0
             };
-            let source_content = column![
+            let mut source_content = column![
                 row![
                     text("▣").size(18).color(ACCENT),
                     text(crop(&source.name, 22)).size(14),
@@ -1130,6 +1135,9 @@ impl App {
                     .color(MUTED),
             ]
             .spacing(10);
+            if let Some(hint) = source_hint(source) {
+                source_content = source_content.push(text(hint).size(10).color(MUTED));
+            }
             let path = source.mount_path.to_path().ok();
             items = items.push(
                 button(source_content)
@@ -1153,6 +1161,22 @@ impl App {
                 .color(MUTED),
             );
         }
+        if cfg!(target_os = "macos")
+            && self
+                .sources
+                .iter()
+                .any(|source| source.mount_path.display == "/")
+            && self
+                .sources
+                .iter()
+                .any(|source| source.mount_path.display == "/System/Volumes/Data")
+        {
+            items = items.push(
+                text("系统与数据入口共享 APFS 容器空间，容量请勿相加。")
+                    .size(10)
+                    .color(MUTED),
+            );
+        }
         items = items.push(Space::new().height(14)).push(row![
             text("已保存的扫描").size(11).color(MUTED),
             Space::new().width(Length::Fill),
@@ -1168,19 +1192,7 @@ impl App {
                 text(crop(&name, 20))
                     .size(13)
                     .color(if selected { WHITE } else { MUTED }),
-                text(format!(
-                    "{}{}",
-                    bytes(scan.logical_bytes),
-                    if scan.known_stale {
-                        " · 待刷新"
-                    } else if scan.complete {
-                        " · 快照"
-                    } else {
-                        " · 部分结果"
-                    }
-                ))
-                .size(10)
-                .color(MUTED),
+                text(scan_size_summary(scan)).size(10).color(MUTED),
             ]
             .spacing(6);
             items = items.push(
@@ -1206,9 +1218,11 @@ impl App {
         let mut sidebar = column![
             scrollable(items).height(Length::Fill),
             rule::horizontal(1),
-            text("逻辑大小 · 不跟随目录链接\n快照记录扫描时的文件状态")
-                .size(10)
-                .color(MUTED)
+            text(
+                "逻辑大小可超过卷容量\n不等于实际占用或可释放空间\n不跟随链接 · 重复目录不重复遍历"
+            )
+            .size(10)
+            .color(MUTED)
         ]
         .spacing(18);
         if self.client.is_none() && !self.connecting {
@@ -1370,6 +1384,7 @@ impl App {
         .height(Length::Fill);
         let center = container(
             column![
+                text("逻辑大小").size(10).color(MUTED),
                 text(bytes(amount)).size(27).color(WHITE),
                 text(crop(&title, 18)).size(11).color(MUTED)
             ]
@@ -1444,7 +1459,7 @@ impl App {
             .width(Length::Fill)
             .style(|_| rounded_style(CARD, 12.0)),
             text(format!(
-                "原始 {} · 已选 {} · 未选 {} · {}",
+                "逻辑大小 {} · 已选 {} · 未选 {} · {}",
                 bytes(scan.logical_bytes),
                 bytes(self.selected_bytes_for_current_scan()),
                 bytes(
@@ -2032,6 +2047,39 @@ impl App {
             .style(|_| rounded_style(PANEL, 20.0))
             .into()
     }
+}
+
+fn source_hint(source: &Volume) -> Option<&'static str> {
+    if cfg!(target_os = "macos") {
+        match source.mount_path.display.as_str() {
+            "/" => Some("系统入口 · 包含数据目录的映射"),
+            "/System/Volumes/Data" => Some("数据入口 · 用户文件与应用数据"),
+            _ => None,
+        }
+    } else {
+        None
+    }
+}
+
+fn scan_size_summary(scan: &ScanSummary) -> String {
+    if scan.root_id.is_none() {
+        return match scan.state.as_deref() {
+            Some("failed") => "扫描失败 · 未生成快照",
+            Some("cancelled") => "扫描已取消 · 未生成快照",
+            Some("interrupted") => "扫描已中断 · 未生成快照",
+            Some("queued" | "running" | "cancel_requested") => "扫描中 · 尚未生成快照",
+            _ => "尚未生成快照",
+        }
+        .into();
+    }
+    let state = if scan.known_stale {
+        "待刷新"
+    } else if scan.complete {
+        "快照"
+    } else {
+        "部分结果"
+    };
+    format!("逻辑 {} · {state}", bytes(scan.logical_bytes))
 }
 
 fn observed_capacity(value: Option<&Value>, root: &str) -> Option<u64> {

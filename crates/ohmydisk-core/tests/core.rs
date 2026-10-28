@@ -466,3 +466,230 @@ fn queued_directory_boundary_is_checked_when_it_is_visited() {
             .any(|issue| issue.code == "boundary_skipped")
     );
 }
+
+/// Models two paths to one physical directory, as macOS firmlinks can expose.
+/// Only the empty test root exists on disk; all entries below it are virtual.
+struct DirectoryAliasPlatform {
+    root: PathBuf,
+    identity: Option<&'static str>,
+    reverse: bool,
+    entered: std::sync::Mutex<Vec<PathBuf>>,
+}
+impl DirectoryAliasPlatform {
+    fn info(&self, path: &Path) -> FileInfo {
+        let root = path == self.root;
+        let directory = root
+            || self.identity == Some("root-directory")
+            || path.parent() == Some(self.root.as_path());
+        FileInfo {
+            kind: if directory {
+                NodeKind::Directory
+            } else {
+                NodeKind::File
+            },
+            logical_bytes: if directory { 4096 } else { 7 },
+            allocated_bytes: Some(if directory { 4096 } else { 512 }),
+            modified_ns: Some(0),
+            identity: if root {
+                "root-directory".into()
+            } else if directory {
+                self.identity
+                    .map_or_else(|| format!("directory:{}", path.display()), str::to_owned)
+            } else if self.identity.is_none_or(str::is_empty) {
+                format!("file:{}", path.display())
+            } else {
+                "one-physical-file".into()
+            },
+            volume_id: "same-volume".into(),
+            link_count: 1,
+            is_link_or_reparse: false,
+        }
+    }
+}
+impl Platform for DirectoryAliasPlatform {
+    fn metadata(&self, path: &Path) -> io::Result<FileInfo> {
+        Ok(self.info(path))
+    }
+    fn read_directory(
+        &self,
+        path: &Path,
+        visitor: &mut dyn FnMut(DirectoryEvent) -> bool,
+    ) -> io::Result<()> {
+        self.entered.lock().unwrap().push(path.to_path_buf());
+        let root_alias = self.identity == Some("root-directory");
+        if root_alias && self.entered.lock().unwrap().len() > 2 {
+            // Keep a broken traversal bounded if ancestor-cycle detection regresses.
+            return Err(io::Error::other("Ancestor alias was traversed repeatedly"));
+        }
+        if path == self.root || root_alias {
+            let aliases = if self.reverse {
+                ["data-path", "firmlink-path"]
+            } else {
+                ["firmlink-path", "data-path"]
+            };
+            for alias in aliases {
+                if !visitor(DirectoryEvent::Entry(ScanEntry {
+                    path: path.join(alias),
+                    info: None,
+                })) {
+                    break;
+                }
+            }
+        } else {
+            let child = path.join("same-file");
+            visitor(DirectoryEvent::Entry(ScanEntry {
+                info: Some(Ok(self.info(&child))),
+                path: child,
+            }));
+        }
+        Ok(())
+    }
+    fn volumes(&self) -> io::Result<Vec<Volume>> {
+        Ok(Vec::new())
+    }
+    fn trash(&self, _: &Path) -> io::Result<()> {
+        Err(io::Error::other("not used"))
+    }
+    fn reveal(&self, _: &Path) -> io::Result<()> {
+        Err(io::Error::other("not used"))
+    }
+    fn protected_paths(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
+}
+
+#[test]
+fn repeated_directory_identity_is_a_boundary_and_does_not_duplicate_bytes() {
+    for reverse in [false, true] {
+        let fixture = tempfile::tempdir().unwrap();
+        let platform = DirectoryAliasPlatform {
+            root: std::fs::canonicalize(fixture.path()).unwrap(),
+            identity: Some("same-physical-directory"),
+            reverse,
+            entered: std::sync::Mutex::new(Vec::new()),
+        };
+        let mut last_progress = ScanProgress::default();
+        let snapshot =
+            ohmydisk_core::scan::scan(&platform.root, &platform, &false.into(), &mut |progress| {
+                last_progress = progress;
+            })
+            .unwrap();
+        assert_eq!(
+            snapshot.nodes[0].logical_bytes, 7,
+            "a directory alias must not duplicate its subtree"
+        );
+        assert_eq!(
+            platform.entered.lock().unwrap().len(),
+            2,
+            "only root and one physical child directory are enumerated"
+        );
+        assert_eq!(
+            snapshot
+                .nodes
+                .iter()
+                .filter(|node| node.kind == NodeKind::File)
+                .count(),
+            1
+        );
+        let aliases = snapshot
+            .nodes
+            .iter()
+            .filter(|node| node.identity == "same-physical-directory")
+            .collect::<Vec<_>>();
+        assert_eq!(aliases.len(), 2);
+        let duplicate = aliases.iter().find(|node| !node.complete).unwrap();
+        assert_eq!(duplicate.logical_bytes, 0);
+        assert_eq!(duplicate.allocated_bytes, Some(0));
+        assert!(!snapshot.complete);
+        assert_eq!(last_progress.files, 1);
+        assert_eq!(last_progress.directories, 2);
+        assert_eq!(last_progress.bytes, 7);
+        assert!(snapshot.issues.iter().any(|issue| issue.node_id.as_deref()
+            == Some(duplicate.id.as_str())
+            && issue.code == "boundary_skipped"
+            && issue.message.contains("directory identity")));
+        assert_eq!(
+            ohmydisk_core::cleanup::prepare_plan(
+                &snapshot,
+                std::slice::from_ref(&duplicate.id),
+                CleanupMode::Trash,
+                &[]
+            )
+            .unwrap_err()
+            .code,
+            "incomplete_subtree"
+        );
+    }
+}
+
+#[test]
+fn distinct_or_unknown_directory_identities_are_not_collapsed() {
+    for identity in [None, Some("")] {
+        let fixture = tempfile::tempdir().unwrap();
+        let platform = DirectoryAliasPlatform {
+            root: std::fs::canonicalize(fixture.path()).unwrap(),
+            identity,
+            reverse: false,
+            entered: std::sync::Mutex::new(Vec::new()),
+        };
+        let snapshot =
+            ohmydisk_core::scan::scan(&platform.root, &platform, &false.into(), &mut |_| {})
+                .unwrap();
+        assert_eq!(snapshot.nodes[0].logical_bytes, 14);
+        assert_eq!(platform.entered.lock().unwrap().len(), 3);
+        assert_eq!(
+            snapshot
+                .nodes
+                .iter()
+                .filter(|node| node.kind == NodeKind::File)
+                .count(),
+            2
+        );
+        assert!(snapshot.complete);
+        assert!(snapshot.issues.is_empty());
+    }
+}
+
+#[test]
+fn directory_alias_to_the_root_cannot_reenter_the_ancestor() {
+    let fixture = tempfile::tempdir().unwrap();
+    let platform = DirectoryAliasPlatform {
+        root: std::fs::canonicalize(fixture.path()).unwrap(),
+        identity: Some("root-directory"),
+        reverse: false,
+        entered: std::sync::Mutex::new(Vec::new()),
+    };
+    let snapshot =
+        ohmydisk_core::scan::scan(&platform.root, &platform, &false.into(), &mut |_| {}).unwrap();
+    assert_eq!(platform.entered.lock().unwrap().len(), 1);
+    assert_eq!(snapshot.nodes.len(), 3);
+    assert_eq!(snapshot.nodes[0].logical_bytes, 0);
+    assert!(!snapshot.complete);
+    assert_eq!(snapshot.issues.len(), 2);
+    assert!(
+        snapshot
+            .issues
+            .iter()
+            .all(|issue| issue.code == "boundary_skipped")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn ordinary_hardlinks_keep_logical_bytes_per_entry() {
+    let fixture = tempfile::tempdir().unwrap();
+    std::fs::write(fixture.path().join("first"), b"seven!!").unwrap();
+    std::fs::hard_link(fixture.path().join("first"), fixture.path().join("second")).unwrap();
+    let snapshot = scanned(fixture.path());
+    let files = snapshot
+        .nodes
+        .iter()
+        .filter(|node| node.kind == NodeKind::File)
+        .collect::<Vec<_>>();
+    assert_eq!(files.len(), 2);
+    assert_eq!(files[0].identity, files[1].identity);
+    assert_eq!(files[0].link_count, 2);
+    assert_eq!(snapshot.nodes[0].logical_bytes, 14);
+    assert_eq!(snapshot.nodes[0].allocated_bytes, None);
+    assert!(snapshot.complete);
+}
