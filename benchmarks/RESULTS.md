@@ -174,8 +174,9 @@ validation failures fail the run.
 Local validation passed 66 Rust tests, six packaging tests, formatting, Clippy
 (existing warnings remain), and actual MCP smoke in both automatic and supervised
 service modes, including native trash, permanent deletion, mode isolation,
-idempotency, reconnect and refresh. Native CI gates distribution of all three
-platform packages. Only CI-built executables are intended for public releases;
+idempotency, reconnect and refresh. [Native Windows/macOS CI](https://github.com/looading/ohMyDisk/actions/runs/40716139549)
+passed all three platform jobs before PR #1 merged; release CI gates distribution
+of all three platform packages. Only CI-built executables are intended for public releases;
 local Cargo builds can contain developer paths in compiled panic locations.
 
 Snapshot encoding has a versioned, checked frame and length. Legacy JSON rows

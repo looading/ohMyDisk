@@ -41,7 +41,7 @@
 - [x] Avoid duplicate full-snapshot decoding and repeated per-request tree construction with a bounded immutable query view.
 - [x] Keep snapshot and cursor identity stable, release cached data with scan lifecycle, and test restart/cache misses.
 - [x] Provide reproducible before/after JSON, commands, environment limits and a manual native benchmark workflow for future comparisons.
-- [ ] Run workspace tests, actual MCP smoke and native CI. Independently review safety and benchmark validity before publishing.
+- [x] Run workspace tests, actual MCP smoke and native CI. Independently review safety and benchmark validity before publishing.
 
 ## Iteration criterion
 
@@ -56,3 +56,5 @@ Run multiple distinct rounds. Reject regressions and optimizations that change s
 - Streaming LZ4 snapshot writes cut persistence and disk footprint. Legacy JSON rows remain readable and untouched; corruption/unsupported codecs fail closed.
 - An initial compressed streaming JSON decoder regressed cold reads. Slice decoding, immutable query views and canonical-ID indexing were measured separately to address that regression.
 - Final evidence and exact reproduction commands live in `benchmarks/RESULTS.md`. No cold-filesystem or whole-user-directory timing claim is made from warm generated fixtures.
+
+Native validation: all three platform jobs passed in [PR CI run 40716139549](https://github.com/looading/ohMyDisk/actions/runs/40716139549) before merging PR #1.

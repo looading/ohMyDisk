@@ -62,9 +62,11 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install pinned Rust toolchain
+        id: rust
         run: |
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
           rustup target add "${{ matrix.target }}"
+          echo "version=$(rustc --version)" >> "$GITHUB_OUTPUT"
       - name: Restore Cargo cache
         id: cargo-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
@@ -73,9 +75,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: benchmark-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}-${{ hashFiles('**/*.rs', '**/Cargo.toml') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}-${{ hashFiles('**/*.rs', '**/Cargo.toml') }}
           restore-keys: |
-            benchmark-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}-
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}-
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ steps.rust.outputs.version }}-
       - name: Build release core diagnostic runner
         run: cargo build --locked --release -p ohmydisk-platform --example scan-bench --target "${{ matrix.target }}"
       - name: Build release application

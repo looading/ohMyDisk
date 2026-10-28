@@ -57,7 +57,10 @@ requiring a machine-wide path-length configuration change. Three separate
 cancellation probes per core binary/mode supplement the complete scans. Fixture
 creation, inventories, service startup and teardown stay outside scan/query
 timings. The core and service harnesses run sequentially within each VM. Cargo
-cache save occurs after measurements.
+cache save occurs after measurements. The cache key matches the native build
+workflow's OS, architecture, actual compiler version, lockfile/config and Rust
+source hashes, allowing the benchmark to reuse its already compiled dependencies.
+Cache restoration and all required rebuilding remain outside measured timings.
 
 ## What the comparisons mean
 
