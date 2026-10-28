@@ -57,6 +57,8 @@ args = ["mcp", "--stdio"]
 
 Windows 使用 `ohmydisk.exe` 的实际绝对路径。两个执行工具需要各自在宿主中启用人工审批，不能将整个服务设为无条件批准。
 
+部分 Windows 宿主禁止子进程脱离 Job Object。遇到后台服务启动的 `Access is denied` 时，在独立终端运行 `ohmydisk.exe service --stay-alive` 并保持终端开启，再连接 MCP。该模式也用于托管 CI 的临时服务监督，详见 [受限宿主接入](docs/mcp.md#受限-windows-宿主)。
+
 ## 验证与构建
 
 ```sh

@@ -34,7 +34,13 @@ enum Command {
         stdio: bool,
     },
     /// Run the private local backend; normally started automatically.
-    Service,
+    Service {
+        #[arg(
+            long,
+            help = "Keep this foreground service running when no clients are connected"
+        )]
+        stay_alive: bool,
+    },
     /// Send one diagnostic JSON request to the shared local backend.
     Call {
         operation: String,
@@ -78,11 +84,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
     runtime.block_on(async move {
         match command {
-            Command::Service => {
+            Command::Service { stay_alive } => {
                 // Recovery must run only after acquiring service ownership.
                 let lock = ipc::acquire_service_lock(&data_dir)?;
                 let engine = Engine::open(data_dir.clone(), Arc::new(NativePlatform))?;
-                ipc::run_with_lock(data_dir, engine, lock).await?;
+                ipc::run_with_lock_options(data_dir, engine, lock, stay_alive).await?;
             }
             Command::Mcp { stdio: _ } => {
                 mcp::run(Client::connect_or_spawn(data_dir).await?).await?
@@ -99,4 +105,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Ok::<(), Box<dyn std::error::Error>>(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn foreground_service_keep_alive_requires_explicit_flag() {
+        assert!(matches!(
+            Cli::try_parse_from(["ohmydisk", "service"])
+                .unwrap()
+                .command,
+            Some(Command::Service { stay_alive: false })
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["ohmydisk", "service", "--stay-alive"])
+                .unwrap()
+                .command,
+            Some(Command::Service { stay_alive: true })
+        ));
+    }
 }

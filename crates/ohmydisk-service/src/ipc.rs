@@ -231,7 +231,37 @@ pub async fn run(data_dir: PathBuf, engine: Arc<Engine>) -> Result<(), AppError>
 pub async fn run_with_lock(
     data_dir: PathBuf,
     engine: Arc<Engine>,
+    service_lock: File,
+) -> Result<(), AppError> {
+    run_with_lock_options(data_dir, engine, service_lock, false).await
+}
+
+/// Run an explicitly supervised foreground service without idle shutdown when requested.
+/// The passed lock must have been obtained before Engine::open, as for `run_with_lock`.
+pub async fn run_with_lock_options(
+    data_dir: PathBuf,
+    engine: Arc<Engine>,
+    service_lock: File,
+    keep_alive: bool,
+) -> Result<(), AppError> {
+    run_with_lock_policy(
+        data_dir,
+        engine,
+        service_lock,
+        keep_alive,
+        IDLE_TIMEOUT,
+        Duration::from_secs(5),
+    )
+    .await
+}
+
+async fn run_with_lock_policy(
+    data_dir: PathBuf,
+    engine: Arc<Engine>,
     _service_lock: File,
+    keep_alive: bool,
+    idle_timeout: Duration,
+    tick_interval: Duration,
 ) -> Result<(), AppError> {
     prepare_private_dir(&data_dir)?;
     let endpoint = Endpoint::new(&fs::canonicalize(data_dir)?)?;
@@ -241,7 +271,7 @@ pub async fn run_with_lock(
     let active = Arc::new(AtomicUsize::new(0));
     let permits = Arc::new(Semaphore::new(CONNECTION_LIMIT));
     let (activity, idle_since) = watch::channel(Instant::now());
-    let mut tick = tokio::time::interval(Duration::from_secs(5));
+    let mut tick = tokio::time::interval(tick_interval);
     loop {
         tokio::select! {
             incoming = listener.accept() => {
@@ -262,7 +292,7 @@ pub async fn run_with_lock(
             },
             _ = tick.tick() => {
                 if engine.has_active_jobs() { activity.send_replace(Instant::now()); }
-                if active.load(Ordering::SeqCst) == 0 && !engine.has_active_jobs() && idle_since.borrow().elapsed() >= IDLE_TIMEOUT { return Ok(()); }
+                if !keep_alive && active.load(Ordering::SeqCst) == 0 && !engine.has_active_jobs() && idle_since.borrow().elapsed() >= idle_timeout { return Ok(()); }
             },
         }
     }
@@ -488,6 +518,52 @@ fn version_error(peer: u32) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn idle_shutdown_and_explicit_keep_alive_have_distinct_lifetimes() {
+        for keep_alive in [false, true] {
+            let fixture = tempfile::tempdir().unwrap();
+            let data_dir = fixture.path().join("state");
+            let lock = acquire_service_lock(&data_dir).unwrap();
+            let engine = Engine::open(
+                data_dir.clone(),
+                Arc::new(ohmydisk_platform::NativePlatform),
+            )
+            .unwrap();
+            let client = Client {
+                endpoint: Endpoint::new(&fs::canonicalize(&data_dir).unwrap()).unwrap(),
+                data_dir: fs::canonicalize(&data_dir).unwrap(),
+                test_launcher: None,
+            };
+            let mut server = tokio::spawn(run_with_lock_policy(
+                data_dir.clone(),
+                engine,
+                lock,
+                keep_alive,
+                Duration::from_millis(50),
+                Duration::from_millis(10),
+            ));
+            let deadline = if keep_alive {
+                Duration::from_millis(250)
+            } else {
+                Duration::from_secs(2)
+            };
+            let finished = timeout(deadline, &mut server).await;
+            if keep_alive {
+                assert!(finished.is_err(), "Foreground service exited while idle");
+                client.call_once("__ping", json!({})).await.unwrap();
+                assert!(acquire_service_lock(&data_dir).is_err());
+                server.abort();
+                let _ = server.await;
+            } else {
+                finished
+                    .expect("Automatic service did not exit when idle")
+                    .unwrap()
+                    .unwrap();
+            }
+            assert!(acquire_service_lock(&data_dir).is_ok());
+        }
+    }
 
     #[tokio::test]
     async fn frame_rejects_length_before_allocating_body() {

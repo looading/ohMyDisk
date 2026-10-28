@@ -34,6 +34,18 @@ args = ["mcp", "--stdio"]
 
 应用构建和测试不会自动修改现有 Codex 配置。[OpenAI 官方接入说明](https://learn.chatgpt.com/docs/extend/mcp)
 
+## 受限 Windows 宿主
+
+某些 agent 宿主及 GitHub 托管 runner 不允许子进程脱离 Job Object。自动服务启动会明确返回 `Access is denied`，不静默改变后台服务的寿命约定。
+
+在独立终端显式启动前台服务，然后使用上面的 MCP 配置连接：
+
+```powershell
+& 'C:\path\to\ohmydisk.exe' service --stay-alive
+```
+
+保持这个终端运行。前台模式不会因空闲自动退出，关闭终端会结束该服务；默认自动启动的后台服务仍会在空闲后退出。服务与 MCP 必须使用同一个用户及数据目录；自定义目录时，两边都传入相同的 `--data-dir`。
+
 ## 授权约定
 
 采用 host_confirmed：agent 宿主负责向用户展示精确清理计划，并在分发执行调用前获得批准。ohMyDisk 不再弹出第二次确认。请在宿主中分别为 omd_execute_trash 和 omd_execute_permanent 设置人工审批，永久删除必须单独批准；不要对整个服务无条件自动批准。
@@ -108,3 +120,5 @@ python3 tests/mcp_smoke.py --trash
 ```
 
 脚本使用隔离的临时文件与数据目录，验证实际 stdio 握手、17 个工具、扫描、计划、两种临时文件清理、模式隔离、重连去重和刷新。可通过 OHMYDISK_BIN 指定待测可执行文件；否则优先查找 release，再查找 debug。
+
+受限 CI 使用 `--service-mode supervised`，由测试监督独立的临时前台服务进程，完整执行相同的扫描、清理、重连及幂等断言，再关闭自己的服务并清理临时文件。默认 `auto` 模式用于验证允许自动脱离的宿主；监督模式通过不代表宿主已经允许 Job Object breakaway。

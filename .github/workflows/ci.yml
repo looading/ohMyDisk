@@ -35,14 +35,17 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact: ohMyDisk-windows-x86_64
             binary-suffix: .exe
+            service-mode: supervised
           - runner: macos-15
             target: aarch64-apple-darwin
             artifact: ohMyDisk-macos-aarch64
             binary-suffix: ""
+            service-mode: auto
           - runner: macos-15-intel
             target: x86_64-apple-darwin
             artifact: ohMyDisk-macos-x86_64
             binary-suffix: ""
+            service-mode: auto
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -86,7 +89,7 @@ jobs:
         run: cargo build --locked --release -p ohmydisk --target "${{ matrix.target }}"
       - name: Smoke test MCP with isolated temporary fixtures and native recycle bin
         timeout-minutes: 5
-        run: python tests/mcp_smoke.py "target/${{ matrix.target }}/release/ohmydisk${{ matrix.binary-suffix }}" --trash
+        run: python tests/mcp_smoke.py "target/${{ matrix.target }}/release/ohmydisk${{ matrix.binary-suffix }}" --trash --service-mode "${{ matrix.service-mode }}"
       - name: Package tested executable
         run: python scripts/package.py --skip-build --target "${{ matrix.target }}"
       - name: Upload downloadable ZIP and SHA256
