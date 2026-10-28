@@ -155,10 +155,12 @@ def is_reparse(info: os.stat_result) -> bool:
 def inventory(root: Path) -> dict:
     """Independently enumerate entries without following links or crossing devices.
 
-    NativePlatform and Python lstat both count hardlinked directory entries at
-    full logical size. File contents, owners, absolute paths and inode values are
-    never retained in the report. The transient change digest catches ordinary
-    changes to real directories while measurements are running.
+    Regular-file hardlinks retain their full logical size per directory entry.
+    Each local directory identity is descended once; a repeated directory is
+    retained as an incomplete boundary node with zero logical bytes. File
+    contents, owners, absolute paths and inode values are never retained in the
+    report. The transient change digest catches ordinary changes to real
+    directories while measurements are running.
     """
     try:
         initial = root.lstat()
@@ -170,6 +172,7 @@ def inventory(root: Path) -> dict:
     rows = []
     changes = []
     pending = [(root, b".")]
+    seen_directories: set[tuple[int, int]] = set()
     logical_bytes = 0
     while pending:
         path, relative = pending.pop()
@@ -188,8 +191,16 @@ def inventory(root: Path) -> dict:
         else:
             kind = "other"
         boundary = link or info.st_dev != initial.st_dev or kind == "other"
+        repeated_directory = False
+        if kind == "directory" and not boundary:
+            identity = (info.st_dev, info.st_ino)
+            if identity in seen_directories:
+                repeated_directory = True
+                boundary = True
+            else:
+                seen_directories.add(identity)
         directory = kind == "directory" and not boundary
-        size = 0 if directory else info.st_size
+        size = 0 if directory or repeated_directory else info.st_size
         counts["nodes"] += 1
         counts["directories" if kind == "directory" else "files"] += 1
         counts[f"kind_{kind}"] += 1

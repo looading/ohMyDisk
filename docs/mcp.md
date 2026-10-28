@@ -57,7 +57,7 @@ args = ["mcp", "--stdio"]
 | 工具 | 用途 |
 |---|---|
 | omd_get_capabilities | 平台能力、统计口径与授权模型 |
-| omd_list_sources | 本地磁盘、总容量和可用容量 |
+| omd_list_sources | 本地扫描入口（挂载点）、卷容量和可用容量 |
 | omd_start_scan | 指定绝对 root_path 与 request_key，返回 scan_id/job_id |
 | omd_list_scans | 保存的扫描摘要 |
 | omd_get_scan | 根节点、完整性、过时状态和刷新引用 |
@@ -122,3 +122,15 @@ python3 tests/mcp_smoke.py --trash
 脚本使用隔离的临时文件与数据目录，验证实际 stdio 握手、17 个工具、扫描、计划、两种临时文件清理、模式隔离、重连去重和刷新。可通过 OHMYDISK_BIN 指定待测可执行文件；否则优先查找 release，再查找 debug。
 
 受限 CI 使用 `--service-mode supervised`，由测试监督独立的临时前台服务进程，完整执行相同的扫描、清理、重连及幂等断言，再关闭自己的服务并清理临时文件。默认 `auto` 模式用于验证允许自动脱离的宿主；监督模式通过不代表宿主已经允许 Job Object breakaway。
+
+
+## 大小统计与 macOS 扫描入口
+
+扫描进度与节点的 `logical_bytes` 表示文件逻辑长度，按文件目录项累计。
+稀疏文件、压缩文件、硬链接和共享区块可能使逻辑总量超过卷容量，不能直接当作实际占用或可释放空间。
+`allocated_bytes` 也不表示精确的独占空间；遇到无法可靠聚合的硬链接时可以为 `null`。
+
+`list_sources` 的每项代表一个挂载入口，不能将所有项的容量简单相加。
+macOS 的 `/` 与 `/System/Volumes/Data` 提供不同入口，系统与数据卷共享 APFS 容器空间。
+它们的文件系统命名空间标识 `id` 可以相同；通过 `mount_path` 区分入口，启动扫描时传入该路径。
+扫描对相同文件系统内已遍历的目录身份去重，重复目录入口记录边界问题，保留节点但不再次遍历或累计内容；普通硬链接文件仍按目录项计逻辑大小。

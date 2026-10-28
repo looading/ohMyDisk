@@ -1,5 +1,6 @@
 use crate::*;
 use std::{
+    collections::HashSet,
     io,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
@@ -42,6 +43,7 @@ pub fn scan(
         cancelled,
         progress,
         volume: original.volume_id,
+        visited_directories: HashSet::new(),
         parents: Vec::new(),
         pending: vec![Pending::Metadata(root, None)],
         counts: ScanProgress {
@@ -100,6 +102,9 @@ struct ScanBuilder<'a, 'p> {
     cancelled: &'a AtomicBool,
     progress: &'p mut dyn FnMut(ScanProgress),
     volume: String,
+    // Traversed directories all belong to `volume`, so identity keys need no
+    // second copy of that same volume ID. Empty identities cannot prove aliasing.
+    visited_directories: HashSet<String>,
     // Parent indices precede their children; usize::MAX is the root sentinel.
     parents: Vec<usize>,
     // Native regular-file metadata is consumed immediately. Unresolved paths
@@ -144,7 +149,12 @@ impl ScanBuilder<'_, '_> {
         let boundary = info.is_link_or_reparse
             || info.volume_id != self.volume
             || info.kind == NodeKind::Other;
-        let directory = info.kind == NodeKind::Directory && !boundary;
+        let duplicate_directory = !boundary
+            && info.kind == NodeKind::Directory
+            && !info.identity.is_empty()
+            && !self.visited_directories.insert(info.identity.clone());
+        let directory = info.kind == NodeKind::Directory && !boundary && !duplicate_directory;
+        let excluded_directory_bytes = directory || duplicate_directory;
         self.parents.push(parent.unwrap_or(usize::MAX));
         self.snapshot.nodes.push(Node {
             id: index.to_string(),
@@ -156,8 +166,12 @@ impl ScanBuilder<'_, '_> {
                 .into_owned(),
             path: NativePath::new(&path),
             kind: info.kind,
-            logical_bytes: if directory { 0 } else { info.logical_bytes },
-            allocated_bytes: if directory {
+            logical_bytes: if excluded_directory_bytes {
+                0
+            } else {
+                info.logical_bytes
+            },
+            allocated_bytes: if excluded_directory_bytes {
                 Some(0)
             } else {
                 info.allocated_bytes
@@ -166,22 +180,24 @@ impl ScanBuilder<'_, '_> {
             identity: info.identity,
             volume_id: info.volume_id,
             link_count: info.link_count,
-            complete: !boundary,
+            complete: !boundary && !duplicate_directory,
             is_link_or_reparse: info.is_link_or_reparse,
         });
-        if boundary {
+        if boundary || duplicate_directory {
             self.snapshot.issues.push(ScanIssue {
                 node_id: Some(index.to_string()),
                 path: self.snapshot.nodes[index].path.display.clone(),
                 code: "boundary_skipped".into(),
-                message:
+                message: if duplicate_directory {
+                    "The same directory identity was already visited; this alias subtree was not traversed or counted"
+                } else {
                     "Link, reparse point, special file or different filesystem was not traversed"
-                        .into(),
+                }.into(),
             });
         }
         if directory {
             self.counts.directories += 1;
-        } else {
+        } else if !duplicate_directory {
             self.counts.files += 1;
             self.counts.bytes = self.counts.bytes.saturating_add(info.logical_bytes);
         }

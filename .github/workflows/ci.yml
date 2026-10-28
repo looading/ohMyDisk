@@ -83,8 +83,8 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets --target "${{ matrix.target }}"
       - name: Test Rust workspace
         run: cargo test --locked --workspace --target "${{ matrix.target }}"
-      - name: Test packaging
-        run: python -m unittest discover -s tests -p 'test_package.py' -v
+      - name: Test packaging and scan inventory
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
       - name: Build release executable
         run: cargo build --locked --release -p ohmydisk --target "${{ matrix.target }}"
       - name: Build scan benchmark runner

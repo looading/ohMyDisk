@@ -87,6 +87,6 @@ python3 scripts/package.py
 
 推送 `main`、提交 Pull Request 或手动运行 workflow 都会构建三个平台的独立 Actions 产物。推送与 `Cargo.toml` 版本一致的 `v*` 标签时，所有构建与测试通过后自动创建 GitHub Release，附上三个 ZIP 和各自的 SHA-256 文件。
 
-例如，workspace 版本为 `0.1.1` 时，发布标签为 `v0.1.1`。标签版本不匹配会拒绝发布。
+例如，workspace 版本为 `0.1.2` 时，发布标签为 `v0.1.2`。标签版本不匹配会拒绝发布。
 
 设计和执行进展见 [功能与接口设计](docs/superpowers/specs/2026-10-28-ohmydisk-design.md) 与 [实现计划](docs/superpowers/plans/2026-10-28-ohmydisk-implementation.md)。
