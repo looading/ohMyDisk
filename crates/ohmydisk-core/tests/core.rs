@@ -28,12 +28,21 @@ impl Platform for TestPlatform {
             )
         };
         #[cfg(windows)]
-        let (identity, volume, allocated, nlink) = (
-            format!("{}:{:?}", p.display(), m.created()),
-            "test".into(),
-            None,
-            1,
-        );
+        let (identity, volume, allocated, nlink) = {
+            // Model one identity for ordinary, extended-length and case aliases
+            // on the fixture's default case-insensitive Windows filesystem.
+            let canonical = std::fs::canonicalize(p)?;
+            (
+                format!(
+                    "{}:{:?}",
+                    canonical.to_string_lossy().to_lowercase(),
+                    m.created()
+                ),
+                "test".into(),
+                None,
+                1,
+            )
+        };
         Ok(FileInfo {
             kind,
             logical_bytes: m.len(),
