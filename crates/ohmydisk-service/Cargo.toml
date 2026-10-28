@@ -15,6 +15,7 @@ sha2.workspace = true
 rusqlite = { version = "0.38", features = ["bundled"] }
 interprocess = { version = "=2.4.7", features = ["tokio"] }
 fs2 = "0.4"
+lz4_flex = "0.14"
 
 [dev-dependencies]
 tempfile.workspace = true

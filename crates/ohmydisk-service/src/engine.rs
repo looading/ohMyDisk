@@ -1,5 +1,9 @@
-use crate::{api, store::Store};
-use ohmydisk_core::{cleanup, query, scan, *};
+use crate::{
+    api,
+    snapshot_cache::{SnapshotCache, SnapshotView},
+    store::Store,
+};
+use ohmydisk_core::{cleanup, scan, *};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -9,6 +13,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -44,6 +49,7 @@ pub struct Engine {
     cancellations: Mutex<HashMap<String, Arc<AtomicBool>>>,
     active: AtomicUsize,
     workers: Arc<tokio::sync::Semaphore>,
+    snapshots: SnapshotCache,
 }
 impl Engine {
     pub fn open(data_dir: PathBuf, platform: Arc<dyn Platform>) -> Result<Arc<Self>, AppError> {
@@ -59,6 +65,7 @@ impl Engine {
             cancellations: Mutex::new(HashMap::new()),
             active: AtomicUsize::new(0),
             workers: Arc::new(tokio::sync::Semaphore::new(2)),
+            snapshots: SnapshotCache::default(),
         });
         engine.recover_scan_staleness()?;
         Ok(engine)
@@ -97,13 +104,12 @@ impl Engine {
                 api::page(&summaries, &args, &format!("scans:{binding}"))
             }
             "get_scan" => self.scan_summary(&self.scan_record(api::text(&args, "scan_id")?)?),
-            "list_scan_issues" => {
-                let snapshot = self.snapshot(api::text(&args, "scan_id")?)?;
-                let mut value =
-                    api::page(&snapshot.issues, &args, &format!("issues:{}", snapshot.id))?;
-                value["scan_id"] = json!(snapshot.scan_id);
-                value["snapshot_id"] = json!(snapshot.id);
-                Ok(value)
+            "list_scan_issues" | "list_children" | "query_nodes" | "reveal_node" => {
+                let engine = self.clone();
+                let operation = op.to_owned();
+                tokio::task::spawn_blocking(move || engine.snapshot_request(&operation, args))
+                    .await
+                    .map_err(|error| AppError::new("worker_panic", error.to_string()))?
             }
             "get_job" => {
                 serde_json::to_value(self.job(api::text(&args, "job_id")?)?).map_err(serialization)
@@ -123,39 +129,12 @@ impl Engine {
                 }
                 Ok(json!(job))
             }
-            "list_children" | "query_nodes" => {
-                let snapshot = self.snapshot(api::text(&args, "scan_id")?)?;
-                let mut query_args = args.clone();
-                if query_args.get("descendants").is_none() {
-                    query_args["descendants"] = json!(false);
-                }
-                let mut filter: Query =
-                    serde_json::from_value(query_args).map_err(serialization)?;
-                if op == "list_children" {
-                    filter.scope_node_id = Some(api::text(&args, "node_id")?.into());
-                    filter.descendants = false;
-                }
-                let mut value = query::query(&snapshot, &filter)?;
-                value["known_stale"] = json!(self.scan_record(&snapshot.scan_id)?.known_stale);
-                Ok(value)
-            }
             "create_cleanup_plan" => self.create_plan(args),
             "get_cleanup_plan" => self.get_plan(args),
             "execute_trash" => self.execute(args, CleanupMode::Trash),
             "execute_permanent" => self.execute(args, CleanupMode::Permanent),
             "get_cleanup_result" => self.cleanup_result(args),
             "release_scan" => self.release_scan(args),
-            "reveal_node" => {
-                let snapshot = self.snapshot(api::text(&args, "scan_id")?)?;
-                let node_id = api::text(&args, "node_id")?;
-                let node = snapshot
-                    .nodes
-                    .iter()
-                    .find(|n| n.id == node_id)
-                    .ok_or_else(|| missing("node"))?;
-                self.platform.reveal(&node.path.to_path()?)?;
-                Ok(json!({"revealed":true,"node_id":node_id}))
-            }
             _ => Err(AppError::new(
                 "unsupported",
                 format!("Unknown operation: {op}"),
@@ -171,7 +150,47 @@ impl Engine {
     fn plan_record(&self, id: &str) -> Result<PlanRecord, AppError> {
         self.store.get("plan", id)?.ok_or_else(|| missing("plan"))
     }
-    fn snapshot(&self, id: &str) -> Result<Snapshot, AppError> {
+    fn snapshot_request(&self, operation: &str, args: Value) -> Result<Value, AppError> {
+        let snapshot = self.snapshot(api::text(&args, "scan_id")?)?;
+        match operation {
+            "list_scan_issues" => {
+                let mut value =
+                    api::page(&snapshot.issues, &args, &format!("issues:{}", snapshot.id))?;
+                value["scan_id"] = json!(snapshot.scan_id);
+                value["snapshot_id"] = json!(snapshot.id);
+                Ok(value)
+            }
+            "reveal_node" => {
+                let id = api::text(&args, "node_id")?;
+                let node = snapshot
+                    .nodes
+                    .iter()
+                    .find(|node| node.id == id)
+                    .ok_or_else(|| missing("node"))?;
+                self.platform.reveal(&node.path.to_path()?)?;
+                Ok(json!({"revealed":true,"node_id":id}))
+            }
+            _ => {
+                let mut filter: Query =
+                    serde_json::from_value(args.clone()).map_err(serialization)?;
+                if operation == "list_children" {
+                    filter.scope_node_id = Some(api::text(&args, "node_id")?.into());
+                    filter.descendants = false;
+                }
+                let mut value = snapshot.query(&filter)?;
+                value["known_stale"] = json!(self.scan_record(&snapshot.scan_id)?.known_stale);
+                Ok(value)
+            }
+        }
+    }
+    fn snapshot_by_id(&self, id: &str) -> Result<Arc<SnapshotView>, AppError> {
+        self.snapshots.get_or_load(id, || {
+            self.store
+                .get_snapshot(id)?
+                .ok_or_else(|| missing("snapshot"))
+        })
+    }
+    fn snapshot(&self, id: &str) -> Result<Arc<SnapshotView>, AppError> {
         let record = self.scan_record(id)?;
         let snapshot_id = record.snapshot_id.ok_or_else(|| {
             AppError::new(
@@ -179,9 +198,7 @@ impl Engine {
                 format!("Scan is not ready; job_id={}", record.job_id),
             )
         })?;
-        self.store
-            .get("snapshot", &snapshot_id)?
-            .ok_or_else(|| missing("snapshot"))
+        self.snapshot_by_id(&snapshot_id)
     }
     fn scan_summary(&self, record: &ScanRecord) -> Result<Value, AppError> {
         let job = self.job(&record.job_id)?;
@@ -235,16 +252,43 @@ impl Engine {
         Ok(response)
     }
     fn launch_scan(self: &Arc<Self>, job_id: String, scan_id: String, path: PathBuf) {
-        self.launch(job_id,move |engine,job_id,cancel|{
-            let mut snapshot=scan::scan(&path,engine.platform.as_ref(),&cancel,&mut |progress|{let _=engine.store.update::<Job>("job",&job_id,|j|j.progress=progress);})?;
+        self.launch(job_id, move |engine, job_id, cancel| {
+            let started=Instant::now();
+            let mut last_update=None::<Instant>;
+            let mut progress_writes=0u64;
+            let mut progress_write_ms=0.0;
+            let mut snapshot=scan::scan(&path,engine.platform.as_ref(),&cancel,&mut |mut progress| {
+                let now=Instant::now();
+                // UI progress is noncritical; terminal states and cleanup
+                // started/outcome records retain their existing FULL durability.
+                if progress.phase=="scanning" && last_update.is_some_and(|last|now.duration_since(last)<Duration::from_millis(250)) {return;}
+                if progress.phase=="completed" {progress.phase="saving".into();}
+                let write=Instant::now();
+                if engine.store.update::<Job>("job",&job_id,|j|j.progress=progress).is_ok() {
+                    progress_writes+=1;last_update=Some(now);
+                }
+                progress_write_ms+=write.elapsed().as_secs_f64()*1000.0;
+            })?;
+            let scan_ms=started.elapsed().as_secs_f64()*1000.0;
             snapshot.scan_id=scan_id.clone();
             let state=if snapshot.cancelled {"cancelled"}else if snapshot.complete {"completed"}else{"completed_with_errors"};
-            engine.store.put("snapshot",&snapshot.id,&snapshot)?;
-            engine.store.update::<ScanRecord>("scan",&scan_id,|r|{
+            let persist=Instant::now();
+            let storage=engine.store.put_snapshot(&snapshot)?;
+            let persist_ms=persist.elapsed().as_secs_f64()*1000.0;
+            engine.store.update::<Job>("job",&job_id,|j|j.progress.phase="indexing".into())?;
+            let indexing=Instant::now();
+            let snapshot=engine.snapshots.insert(snapshot)?;
+            let index_build_ms=indexing.elapsed().as_secs_f64()*1000.0;
+            engine.store.update::<ScanRecord>("scan",&scan_id,|r| {
                 r.root_path=snapshot.root_path.clone();r.snapshot_id=Some(snapshot.id.clone());r.root_id=Some(snapshot.root_id.clone());r.complete=snapshot.complete;r.created_at=snapshot.created_at;r.issue_count=snapshot.issues.len();
                 r.logical_bytes=snapshot.nodes.iter().find(|n|n.id==snapshot.root_id).map_or(0,|n|n.logical_bytes);
             })?;
-            engine.store.update::<Job>("job",&job_id,|j|j.result=json!({"scan_id":scan_id,"snapshot_id":snapshot.id,"complete":snapshot.complete,"issue_count":snapshot.issues.len()}))?;
+            engine.store.update::<Job>("job",&job_id,|j|j.result=json!({
+                "scan_id":scan_id,"snapshot_id":snapshot.id,"complete":snapshot.complete,"issue_count":snapshot.issues.len(),
+                "scan_ms":scan_ms,"persist_ms":persist_ms,"progress_writes":progress_writes,"progress_write_ms":progress_write_ms,
+                "snapshot_codec":storage.codec,"snapshot_stored_bytes":storage.stored_bytes,"snapshot_json_bytes":storage.json_bytes,
+                "index_build_ms":index_build_ms,
+            }))?;
             Ok(state.into())
         });
     }
@@ -298,7 +342,7 @@ impl Engine {
         if accepted {
             self.launch(job_id,move |engine,job_id,cancel|{
             if cancel.load(Ordering::SeqCst){return Ok("cancelled".into());}
-            let snapshot:Snapshot=engine.store.get("snapshot",&snapshot_id)?.ok_or_else(||missing("snapshot"))?;
+            let snapshot=engine.snapshot_by_id(&snapshot_id)?;
             let mut protected=engine.platform.protected_paths();protected.push(engine.data_dir.clone());
             let mut plan=cleanup::prepare_plan(&snapshot,&ids,mode,&protected)?;plan.id=plan_id.clone();cleanup::rehash_plan(&mut plan)?;
             let mut subtrees=engine.platform.protected_subtrees();subtrees.push(engine.data_dir.clone());cleanup::validate_plan_scope(&plan,&subtrees,engine.platform.as_ref())?;
@@ -561,7 +605,8 @@ impl Engine {
             ));
         }
         if let Some(snapshot) = record.snapshot_id {
-            self.store.delete("snapshot", &snapshot)?;
+            self.store.delete_snapshot(&snapshot)?;
+            self.snapshots.remove(&snapshot)?;
         }
         self.store.delete("scan", id)?;
         Ok(json!({"released":true,"scan_id":id}))

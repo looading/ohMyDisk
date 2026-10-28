@@ -1,0 +1,26 @@
+[package]
+name = "ohmydisk-scan-reference"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+publish = false
+
+# An independent workspace keeps the reference on the published release APIs,
+# even when this directory is inside an optimized ohMyDisk checkout.
+[workspace]
+resolver = "3"
+
+[dependencies]
+ohmydisk-core = { git = "https://github.com/looading/ohMyDisk.git", rev = "37098869488fd0607fb13bb32a1298e6d5ed9006" }
+ohmydisk-platform = { git = "https://github.com/looading/ohMyDisk.git", rev = "37098869488fd0607fb13bb32a1298e6d5ed9006" }
+serde_json = "=1.0.154"
+sha2 = "=0.10.9"
+
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.191"
+
+# Match the published v0.1.0 workspace's release profile.
+[profile.release]
+lto = "thin"
+strip = true

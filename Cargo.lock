@@ -1397,6 +1397,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lz4_flex"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226"
+dependencies = [
+ "twox-hash",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1803,7 +1812,7 @@ dependencies = [
 
 [[package]]
 name = "ohmydisk"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "dirs",
@@ -1820,7 +1829,7 @@ dependencies = [
 
 [[package]]
 name = "ohmydisk-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "serde",
@@ -1833,12 +1842,14 @@ dependencies = [
 
 [[package]]
 name = "ohmydisk-platform"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dirs",
  "interprocess",
  "libc",
  "ohmydisk-core",
+ "serde_json",
+ "sha2",
  "sysinfo",
  "tempfile",
  "trash",
@@ -1850,10 +1861,11 @@ dependencies = [
 
 [[package]]
 name = "ohmydisk-service"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "fs2",
  "interprocess",
+ "lz4_flex",
  "ohmydisk-core",
  "ohmydisk-platform",
  "rusqlite",
@@ -2831,6 +2843,12 @@ checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 dependencies = [
  "core_maths",
 ]
+
+[[package]]
+name = "twox-hash"
+version = "2.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86a801b3cea342a06d468c8710662aa29e5e05e4f5c0d62f00bbb7f2ad7941c2"
 
 [[package]]
 name = "typenum"

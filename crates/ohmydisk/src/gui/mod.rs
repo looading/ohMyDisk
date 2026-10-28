@@ -2109,6 +2109,9 @@ fn phase_label(phase: &str) -> &str {
         "preparing" => "核对清单",
         "cleaning" | "executing" => "清理中",
         "completed" => "已完成",
+        "saving" => "保存扫描结果",
+        "indexing" => "整理扫描结果",
+        "cancelled" => "已停止",
         "queued" => "等待中",
         _ => {
             if phase.is_empty() {

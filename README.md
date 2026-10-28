@@ -59,6 +59,12 @@ Windows 使用 `ohmydisk.exe` 的实际绝对路径。两个执行工具需要�
 
 部分 Windows 宿主禁止子进程脱离 Job Object。遇到后台服务启动的 `Access is denied` 时，在独立终端运行 `ohmydisk.exe service --stay-alive` 并保持终端开启，再连接 MCP。该模式也用于托管 CI 的临时服务监督，详见 [受限宿主接入](docs/mcp.md#受限-windows-宿主)。
 
+## 扫描性能
+
+macOS 使用批量目录元数据读取，其他平台保留通用枚举实现。扫描结果采用压缩快照存储，列表与图表查询复用不可变索引。旧版本的 JSON 快照仍可读取。
+
+[性能基准与实测结果](https://github.com/looading/ohMyDisk/tree/main/benchmarks) 提供纯扫描、服务端到端、重启后历史查询及取消响应的测量方法。默认生成临时测试文件，报告包含原始数字、median、p95 和二进制 SHA-256，省略用户路径。CI 在三个原生平台运行小规模正确性检查，完整基准可从 Actions 手动运行。
+
 ## 验证与构建
 
 ```sh
@@ -81,6 +87,6 @@ python3 scripts/package.py
 
 推送 `main`、提交 Pull Request 或手动运行 workflow 都会构建三个平台的独立 Actions 产物。推送与 `Cargo.toml` 版本一致的 `v*` 标签时，所有构建与测试通过后自动创建 GitHub Release，附上三个 ZIP 和各自的 SHA-256 文件。
 
-例如，workspace 版本为 `0.1.0` 时，发布标签为 `v0.1.0`。标签版本不匹配会拒绝发布。
+例如，workspace 版本为 `0.1.1` 时，发布标签为 `v0.1.1`。标签版本不匹配会拒绝发布。
 
 设计和执行进展见 [功能与接口设计](docs/superpowers/specs/2026-10-28-ohmydisk-design.md) 与 [实现计划](docs/superpowers/plans/2026-10-28-ohmydisk-implementation.md)。

@@ -87,6 +87,27 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_package.py' -v
       - name: Build release executable
         run: cargo build --locked --release -p ohmydisk --target "${{ matrix.target }}"
+      - name: Build scan benchmark runner
+        run: cargo build --locked --release -p ohmydisk-platform --example scan-bench --target "${{ matrix.target }}"
+      - name: Smoke test benchmark correctness and historical snapshot loading
+        timeout-minutes: 5
+        run: |
+          python benchmarks/scan_bench.py \
+            --binary "target/${{ matrix.target }}/release/examples/scan-bench${{ matrix.binary-suffix }}" \
+            --small-files 1000 --wide-files 1000 --deep-depth 8 --mixed-files 100 \
+            --iterations 1 --warmups 0 --cancel-iterations 1 \
+            --output benchmark-smoke-core.json
+          python benchmarks/service_bench.py \
+            --binary "target/${{ matrix.target }}/release/ohmydisk${{ matrix.binary-suffix }}" \
+            --files 1000 --runs 1 --historical-restart \
+            --output benchmark-smoke-service.json
+      - name: Upload benchmark smoke reports
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: benchmark-smoke-${{ matrix.target }}
+          path: benchmark-smoke-*.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Smoke test MCP with isolated temporary fixtures and native recycle bin
         timeout-minutes: 5
         run: python tests/mcp_smoke.py "target/${{ matrix.target }}/release/ohmydisk${{ matrix.binary-suffix }}" --trash --service-mode "${{ matrix.service-mode }}"
