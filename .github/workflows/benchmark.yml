@@ -1,0 +1,290 @@
+name: manual-native-benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      fixture_profile:
+        description: Generated fixture sizes
+        required: true
+        type: choice
+        default: standard
+        options: [standard, smoke]
+      iterations:
+        description: Measured runs per variant, after one excluded warmup
+        required: true
+        type: choice
+        default: "5"
+        options: ["5", "7", "10"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  MACOSX_DEPLOYMENT_TARGET: "13.0"
+  RUSTUP_TOOLCHAIN: "1.94.1"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  benchmark:
+    name: ${{ matrix.artifact }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            artifact: windows-x86_64
+            binary-suffix: .exe
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            artifact: macos-aarch64
+            binary-suffix: ""
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            artifact: macos-x86_64
+            binary-suffix: ""
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.13"
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          rustup target add "${{ matrix.target }}"
+      - name: Restore Cargo cache
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: benchmark-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}-${{ hashFiles('**/*.rs', '**/Cargo.toml') }}
+          restore-keys: |
+            benchmark-${{ runner.os }}-${{ runner.arch }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}-
+      - name: Build release core diagnostic runner
+        run: cargo build --locked --release -p ohmydisk-platform --example scan-bench --target "${{ matrix.target }}"
+      - name: Build release application
+        run: cargo build --locked --release -p ohmydisk --target "${{ matrix.target }}"
+      - name: Measure generated fixtures and validate results
+        id: measurements
+        continue-on-error: true
+        timeout-minutes: 45
+        env:
+          BENCH_PROFILE: ${{ inputs.fixture_profile }}
+          BENCH_ITERATIONS: ${{ inputs.iterations }}
+          BENCH_TARGET: ${{ matrix.target }}
+          BENCH_RUNNER: ${{ matrix.runner }}
+          BENCH_SUFFIX: ${{ matrix.binary-suffix }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import platform
+          import re
+          import subprocess
+          import sys
+
+          output = Path("benchmark-results")
+          output.mkdir(exist_ok=True)
+          profiles = {
+              "standard": {"small": 100000, "wide": 50000, "mixed": 10000, "depth": 64, "per_level": 64},
+              "smoke": {"small": 1000, "wide": 500, "mixed": 100, "depth": 16, "per_level": 4},
+          }
+          profile = os.environ["BENCH_PROFILE"]
+          iterations = os.environ["BENCH_ITERATIONS"]
+          if profile not in profiles or iterations not in {"5", "7", "10"}:
+              raise SystemExit("Invalid benchmark configuration")
+          sizes = profiles[profile]
+          target = os.environ["BENCH_TARGET"]
+          release = Path("target") / target / "release"
+          suffix = os.environ["BENCH_SUFFIX"]
+          runner = release / "examples" / ("scan-bench" + suffix)
+          app = release / ("ohmydisk" + suffix)
+          status = {"scan": {"validated": False}, "service": {"validated": False}}
+          metadata = {
+              "schema_version": 1,
+              "commit_sha": os.environ["GITHUB_SHA"],
+              "run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "runner_label": os.environ["BENCH_RUNNER"],
+              "target": target,
+              "rust_toolchain": os.environ["RUSTUP_TOOLCHAIN"],
+              "python": platform.python_version(),
+              "fixture_profile": profile,
+              "fixture_sizes": sizes,
+              "measured_runs": int(iterations),
+              "excluded_warmups": 1,
+              "seed": 20261028,
+              "scan_reference": "same release runner with portable enumeration",
+              "service_reference": None,
+              "historical_restart": True,
+              "timing_thresholds": None,
+          }
+          for key in ("ImageOS", "ImageVersion"):
+              value = os.environ.get(key, "")
+              if re.fullmatch(r"[A-Za-z0-9_.+\-]+", value):
+                  metadata[key] = value
+          (output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+          commands = {
+              "scan": [sys.executable, "benchmarks/scan_bench.py", "--binary", str(runner),
+                       "--reference-binary", str(runner), "--enumeration", "default",
+                       "--reference-enumeration", "portable", "--target", target,
+                       "--fixture", "all", "--small-files", str(sizes["small"]),
+                       "--wide-files", str(sizes["wide"]), "--mixed-files", str(sizes["mixed"]),
+                       "--deep-depth", str(sizes["depth"]), "--deep-files-per-level", str(sizes["per_level"]),
+                       "--seed", "20261028", "--iterations", iterations, "--warmups", "1",
+                       "--cancel-iterations", "3", "--output", str(output / "scan.json")],
+              "service": [sys.executable, "benchmarks/service_bench.py", "--binary", str(app),
+                          "--files", str(sizes["small"]), "--runs", iterations,
+                          "--historical-restart",
+                          "--output", str(output / "service.json")],
+          }
+          for kind, command in commands.items():
+              print("Running " + kind + " benchmark", flush=True)
+              try:
+                  completed = subprocess.run(command, stdin=subprocess.DEVNULL,
+                                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                             timeout=1200, check=False)
+                  status[kind]["exit_code"] = completed.returncode
+                  report = json.loads((output / (kind + ".json")).read_text(encoding="utf-8"))
+                  if kind == "scan":
+                      valid = report.get("validated") is True and len(report.get("fixtures", [])) == 4
+                  else:
+                      trials = report["binaries"]["candidate"]["trials"]
+                      valid = len(trials) == int(iterations) and all(
+                          trial["complete"] is True and trial["issue_count"] == 0
+                          and trial["historical_results_verified"] is True
+                          and trial["files"] == sizes["small"]
+                          and trial["directories"] == 1 + (sizes["small"] + 999) // 1000
+                          and trial["logical_bytes"] == sizes["small"] * 128 for trial in trials)
+                  status[kind]["validated"] = completed.returncode == 0 and valid
+              except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
+                  status[kind]["error"] = "benchmark_execution_or_report_failed"
+              (output / "status.json").write_text(json.dumps(status, indent=2) + "\n", encoding="utf-8")
+          raise SystemExit(0 if all(item["validated"] for item in status.values()) else 1)
+          PY
+      - name: Write numeric summary
+        if: always()
+        env:
+          BENCH_RUNNER: ${{ matrix.runner }}
+          BENCH_TARGET: ${{ matrix.target }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          output = Path("benchmark-results")
+          output.mkdir(exist_ok=True)
+          def read(name):
+              try:
+                  value = json.loads((output / name).read_text(encoding="utf-8"))
+                  return value if isinstance(value, dict) else {}
+              except (OSError, ValueError):
+                  return {}
+          def number(value):
+              return "n/a" if value is None else format(value, ".3f")
+          status = read("status.json")
+          scan = read("scan.json")
+          service = read("service.json")
+          lines = ["# Native benchmark: " + os.environ["BENCH_RUNNER"], "",
+                   "Target: `" + os.environ["BENCH_TARGET"] + "`.", "",
+                   "Timings are informational. Only execution and correctness validation affect the job result.", "",
+                   "Core: same binary, default enumeration versus portable. This isolates the enumerator; it is not a v0.1.0 comparison.", "",
+                   "| Validation | Passed |", "| --- | --- |"]
+          for kind in ("scan", "service"):
+              lines.append("| " + kind + " | " + str(status.get(kind, {}).get("validated", False)) + " |")
+          lines += ["", "## Core scan", "",
+                    "| Fixture | Default median ms | Portable median ms | Default / portable | Default p95 ms | Portable p95 ms |",
+                    "| --- | ---: | ---: | ---: | ---: | ---: |"]
+          fixtures = {"small-files", "wide-directory", "deep-tree", "mixed"}
+          for fixture in scan.get("fixtures", []):
+              name = fixture.get("fixture", {}).get("kind")
+              if name not in fixtures:
+                  continue
+              variants = fixture["variants"]
+              default = variants["candidate"]["summary"]["scan_ms"]
+              portable = variants["reference"]["summary"]["scan_ms"]
+              ratio = fixture.get("comparison", {}).get("scan_ms_candidate_over_reference")
+              lines.append("| " + " | ".join([name, number(default["median"]), number(portable["median"]),
+                            number(ratio), number(default["p95"]), number(portable["p95"])]) + " |")
+          lines += ["", "## Service end to end", "", "Current release build only; no historical application baseline.", "",
+                    "| Metric | Median | p95 |", "| --- | ---: | ---: |"]
+          summary = service.get("binaries", {}).get("candidate", {}).get("summary", {})
+          metrics = ("scan_terminal_ms", "source_scan_ms", "source_persist_ms", "source_index_build_ms",
+                     "first_list_children_ms", "first_query_descendants_ms", "warm_list_children_ms",
+                     "warm_query_descendants_ms", "sampled_max_rss_bytes", "state_total_bytes",
+                     "snapshot_payload_bytes", "snapshot_stored_bytes",
+                     "historical_cold_list_children_ms", "historical_cold_query_descendants_ms",
+                     "historical_warm_list_children_ms", "historical_warm_query_descendants_ms",
+                     "historical_children_sampled_max_rss_bytes", "historical_descendants_sampled_max_rss_bytes")
+          for metric in metrics:
+              value = summary.get(metric)
+              lines.append("| " + metric + " | " + number(value["median"] if value else None)
+                           + " | " + number(value["p95"] if value else None) + " |")
+          lines += ["", "Core query index construction is outside scan_ms and the scan-end process peak-RSS reading.",
+                    "Service RPC timings include diagnostic process startup and polling; service RSS is a sample maximum, not a process peak.",
+                    "Historical cold queries restart the service against saved state; OS filesystem caches remain warm.",
+                    "Windows default and portable currently share the portable enumerator; those results establish parity.",
+                    "One excluded warmup; nearest-rank p95; filesystem caches are not cleared.",
+                    "See the JSON artifacts for all raw numeric trials, environment and binary hashes.", ""]
+          text = "\n".join(lines)
+          (output / "summary.md").write_text(text, encoding="utf-8")
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as destination:
+              destination.write(text)
+          PY
+      - name: Upload sanitized measurements and summary
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: benchmark-${{ matrix.artifact }}-${{ github.run_attempt }}
+          path: |
+            benchmark-results/scan.json
+            benchmark-results/service.json
+            benchmark-results/metadata.json
+            benchmark-results/status.json
+            benchmark-results/summary.md
+          if-no-files-found: error
+          retention-days: 14
+      - name: Enforce execution and correctness only
+        if: always() && !cancelled()
+        env:
+          MEASUREMENT_OUTCOME: ${{ steps.measurements.outcome }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          try:
+              status = json.loads(Path("benchmark-results/status.json").read_text(encoding="utf-8"))
+              valid = os.environ["MEASUREMENT_OUTCOME"] == "success" and all(
+                  status[kind]["validated"] is True for kind in ("scan", "service"))
+          except (OSError, ValueError, KeyError, TypeError):
+              valid = False
+          raise SystemExit(0 if valid else "Benchmark execution or correctness validation failed")
+          PY
+      - name: Save Cargo cache after measurement
+        if: always() && !cancelled() && steps.cargo-cache.outputs.cache-primary-key != '' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}

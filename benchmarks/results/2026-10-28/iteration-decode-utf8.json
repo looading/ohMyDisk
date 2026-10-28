@@ -1,0 +1,129 @@
+{
+  "alternating_order": true,
+  "architecture": "aarch64",
+  "encoding": "production_streamed_codec",
+  "fixture": "synthetic_snapshot_all_fields",
+  "full_snapshot_fingerprint_equal_every_run": true,
+  "json_bytes": 52578003,
+  "measured_per_strategy": 7,
+  "nodes": 100000,
+  "pairs": [
+    {
+      "first": "from_slice",
+      "round": 0,
+      "slice_ms": 59.509083999999994,
+      "str_ms": 54.910333
+    },
+    {
+      "first": "utf8_once_from_str",
+      "round": 1,
+      "slice_ms": 61.751292,
+      "str_ms": 55.342292
+    },
+    {
+      "first": "from_slice",
+      "round": 2,
+      "slice_ms": 58.931208999999996,
+      "str_ms": 55.291917000000005
+    },
+    {
+      "first": "utf8_once_from_str",
+      "round": 3,
+      "slice_ms": 54.097083,
+      "str_ms": 51.281792
+    },
+    {
+      "first": "from_slice",
+      "round": 4,
+      "slice_ms": 53.688958,
+      "str_ms": 51.026042000000004
+    },
+    {
+      "first": "utf8_once_from_str",
+      "round": 5,
+      "slice_ms": 57.309417,
+      "str_ms": 51.786291999999996
+    },
+    {
+      "first": "from_slice",
+      "round": 6,
+      "slice_ms": 58.503541999999996,
+      "str_ms": 53.381625
+    }
+  ],
+  "release": true,
+  "results": [
+    {
+      "expand_median_ms": 16.390124999999998,
+      "expand_runs_ms": [
+        16.480375,
+        16.473792,
+        16.752459,
+        15.677208000000002,
+        15.317916,
+        15.834458999999999,
+        16.390124999999998
+      ],
+      "median_ms": 58.503541999999996,
+      "parse_median_ms": 42.111917,
+      "parse_runs_ms": [
+        43.027625,
+        45.276833,
+        42.177667,
+        38.418667,
+        38.369959,
+        41.473709,
+        42.111917
+      ],
+      "runs_ms": [
+        59.509083999999994,
+        61.751292,
+        58.931208999999996,
+        54.097083,
+        53.688958,
+        57.309417,
+        58.503541999999996
+      ],
+      "strategy": "from_slice"
+    },
+    {
+      "expand_median_ms": 16.65275,
+      "expand_runs_ms": [
+        17.058125,
+        16.9635,
+        16.934542,
+        16.185417,
+        15.333542,
+        15.565375,
+        16.65275
+      ],
+      "median_ms": 53.381625,
+      "parse_median_ms": 36.727625,
+      "parse_runs_ms": [
+        37.850666,
+        38.375583,
+        38.356541,
+        35.095167,
+        35.691209,
+        36.220083,
+        36.727625
+      ],
+      "runs_ms": [
+        54.910333,
+        55.342292,
+        55.291917000000005,
+        51.281792,
+        51.026042000000004,
+        51.786291999999996,
+        53.381625
+      ],
+      "strategy": "utf8_once_from_str"
+    }
+  ],
+  "rss_caveat": "Raw JSON bytes temporarily coexist with the decoded snapshot; any process peak includes fixture generation and warmups.",
+  "rss_measured": false,
+  "stored_bytes": 4623233,
+  "timing_excludes_fixture_encoding_fingerprint_and_snapshot_drop": true,
+  "timing_includes_frame_to_vec_checks_parse_and_temporary_json_drop": true,
+  "warmups_per_strategy": 2
+}

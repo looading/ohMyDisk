@@ -2,7 +2,7 @@
 
 #[cfg(any(unix, test))]
 use ohmydisk_core::NodeKind;
-use ohmydisk_core::{FileInfo, NativePath, Platform, Volume};
+use ohmydisk_core::{DirectoryEvent, FileInfo, NativePath, Platform, Volume};
 #[cfg(unix)]
 use std::time::UNIX_EPOCH;
 use std::{
@@ -11,6 +11,8 @@ use std::{
     process::{Child, Command, Stdio},
 };
 
+#[cfg(target_os = "macos")]
+mod macos_bulk;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
@@ -29,6 +31,21 @@ impl NativePlatform {
 }
 
 impl Platform for NativePlatform {
+    fn read_directory(
+        &self,
+        path: &Path,
+        visitor: &mut dyn FnMut(DirectoryEvent) -> bool,
+    ) -> io::Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            macos_bulk::read_directory(path, visitor)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            ohmydisk_core::platform::read_directory_portable(path, visitor)
+        }
+    }
+
     fn metadata(&self, path: &Path) -> io::Result<FileInfo> {
         #[cfg(windows)]
         {

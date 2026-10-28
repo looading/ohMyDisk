@@ -585,3 +585,137 @@ async fn cleanup_pagination_waits_for_fixed_membership_and_updates_cannot_add_no
     assert_eq!(result["items_ready"], true);
     assert_eq!(result["items"].as_array().unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn cached_snapshot_pages_survive_restart_and_release_removes_blob() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("files");
+    std::fs::create_dir(&root).unwrap();
+    for n in 1..=7 {
+        std::fs::write(root.join(format!("file-{n}")), vec![0u8; n]).unwrap();
+    }
+    let state = fixture.path().join("state");
+    let engine = Engine::open(state.clone(), Arc::new(NativePlatform)).unwrap();
+    let scan = engine
+        .handle(
+            "start_scan",
+            json!({"root_path":root,"request_key":"cached-pages"}),
+        )
+        .await
+        .unwrap();
+    let job = wait(&engine, &scan).await;
+    assert_eq!(job.state, "completed");
+    assert_eq!(job.result["snapshot_codec"], "lz4-json-v1");
+    let summary = engine
+        .handle("get_scan", json!({"scan_id":scan["scan_id"]}))
+        .await
+        .unwrap();
+    let query = json!({"scan_id":scan["scan_id"],"node_id":summary["root_id"],"limit":2});
+    let first = engine.handle("list_children", query.clone()).await.unwrap();
+    assert_eq!(
+        first,
+        engine.handle("list_children", query.clone()).await.unwrap()
+    );
+    let mut second_query = query;
+    second_query["cursor"] = first["next_cursor"].clone();
+    let second = engine
+        .handle("list_children", second_query.clone())
+        .await
+        .unwrap();
+    while engine.has_active_jobs() {
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    drop(engine);
+    let engine = Engine::open(state.clone(), Arc::new(NativePlatform)).unwrap();
+    assert_eq!(
+        second,
+        engine.handle("list_children", second_query).await.unwrap()
+    );
+    engine
+        .handle("release_scan", json!({"scan_id":scan["scan_id"]}))
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .handle("query_nodes", json!({"scan_id":scan["scan_id"]}))
+            .await
+            .unwrap_err()
+            .code,
+        "not_found"
+    );
+    let db = rusqlite::Connection::open(state.join("state.sqlite")).unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM snapshot_blobs", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn legacy_snapshot_query_is_compatible_without_rewriting_legacy_data() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("files");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("legacy"), b"legacy data").unwrap();
+    let snapshot =
+        ohmydisk_core::scan::scan(&root, &NativePlatform, &false.into(), &mut |_| {}).unwrap();
+    let state = fixture.path().join("state");
+    ohmydisk_platform::prepare_private_dir(&state).unwrap();
+    let store = Store::open(&state.join("state.sqlite")).unwrap();
+    let job_id = new_id();
+    store.put("snapshot", &snapshot.id, &snapshot).unwrap();
+    store.put("scan",&snapshot.scan_id,&json!({"scan_id":snapshot.scan_id,"job_id":job_id,"root_path":snapshot.root_path,"created_at":snapshot.created_at,"snapshot_id":snapshot.id,"root_id":snapshot.root_id,"logical_bytes":snapshot.nodes[0].logical_bytes,"complete":snapshot.complete,"issue_count":snapshot.issues.len(),"known_stale":false,"refresh_job_id":null})).unwrap();
+    store
+        .put(
+            "job",
+            &job_id,
+            &Job {
+                id: job_id.clone(),
+                kind: "scan".into(),
+                state: "completed".into(),
+                created_at: 0,
+                progress: ScanProgress::default(),
+                result: json!({"scan_id":snapshot.scan_id}),
+                error: None,
+            },
+        )
+        .unwrap();
+    drop(store);
+    let engine = Engine::open(state.clone(), Arc::new(NativePlatform)).unwrap();
+    let mut expected = ohmydisk_core::query::query(
+        &snapshot,
+        &Query {
+            descendants: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    expected["known_stale"] = json!(false);
+    assert_eq!(
+        engine
+            .handle(
+                "query_nodes",
+                json!({"scan_id":snapshot.scan_id,"descendants":true})
+            )
+            .await
+            .unwrap(),
+        expected
+    );
+    let db = rusqlite::Connection::open(state.join("state.sqlite")).unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM snapshot_blobs", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM entities WHERE kind='snapshot'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+}

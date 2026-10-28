@@ -1,0 +1,666 @@
+{
+  "binaries": {
+    "candidate": {
+      "sha256": "6deefd6e833182c7d6aef6e947044a0597e73026ba1f1441f1cc1f654bfe24c4",
+      "summary": {
+        "children_returned": {
+          "median": 100,
+          "p95": 100
+        },
+        "descendants_returned": {
+          "median": 500,
+          "p95": 500
+        },
+        "directories": {
+          "median": 101,
+          "p95": 101
+        },
+        "files": {
+          "median": 100000,
+          "p95": 100000
+        },
+        "first_list_children_ms": {
+          "median": 285.35833302885294,
+          "p95": 297.31562500819564
+        },
+        "first_query_descendants_ms": {
+          "median": 289.38220895361155,
+          "p95": 294.62204105220735
+        },
+        "get_scan_ms": {
+          "median": 8.898791042156518,
+          "p95": 22.97470800112933
+        },
+        "issue_count": {
+          "median": 0,
+          "p95": 0
+        },
+        "logical_bytes": {
+          "median": 12800000,
+          "p95": 12800000
+        },
+        "poll_count": {
+          "median": 6,
+          "p95": 7
+        },
+        "poll_rpc_total_ms": {
+          "median": 80.79616690520197,
+          "p95": 217.73529110942036
+        },
+        "progress_writes": {
+          "median": 2,
+          "p95": 2
+        },
+        "rss_samples": {
+          "median": 15,
+          "p95": 17
+        },
+        "sampled_max_rss_bytes": {
+          "median": 205848576,
+          "p95": 206471168
+        },
+        "scan_terminal_ms": {
+          "median": 370.75983290560544,
+          "p95": 502.14554101694375
+        },
+        "snapshot_compression_ratio": {
+          "median": 0.08588709491689782,
+          "p95": 0.08588726873174346
+        },
+        "snapshot_payload_bytes": {
+          "median": 57532485,
+          "p95": 57532485
+        },
+        "snapshot_stored_bytes": {
+          "median": 4941298,
+          "p95": 4941308
+        },
+        "source_index_build_ms": null,
+        "source_persist_ms": {
+          "median": 154.10120899999998,
+          "p95": 277.508625
+        },
+        "source_scan_ms": {
+          "median": 142.30325,
+          "p95": 146.402208
+        },
+        "start_scan_accept_ms": {
+          "median": 8.487042039632797,
+          "p95": 9.46154200937599
+        },
+        "state_database_bytes": {
+          "median": 4988928,
+          "p95": 4988928
+        },
+        "state_shm_bytes": {
+          "median": 32768,
+          "p95": 32768
+        },
+        "state_total_bytes": {
+          "median": 10097568,
+          "p95": 10097568
+        },
+        "state_wal_bytes": {
+          "median": 5075872,
+          "p95": 5075872
+        },
+        "warm_list_children_ms": {
+          "median": 272.25487492978573,
+          "p95": 285.15337500721216
+        },
+        "warm_query_descendants_ms": {
+          "median": 283.0143750179559,
+          "p95": 289.6362090250477
+        }
+      },
+      "trials": [
+        {
+          "children_returned": 100,
+          "complete": true,
+          "descendants_returned": 500,
+          "directories": 101,
+          "files": 100000,
+          "first_list_children_ms": 285.35833302885294,
+          "first_query_descendants_ms": 289.38220895361155,
+          "get_scan_ms": 8.278792025521398,
+          "issue_count": 0,
+          "logical_bytes": 12800000,
+          "poll_count": 6,
+          "poll_rpc_total_ms": 85.88604186661541,
+          "progress_writes": 2,
+          "rss_samples": 15,
+          "sampled_max_rss_bytes": 205963264,
+          "scan_terminal_ms": 360.1994999917224,
+          "snapshot_compression_ratio": 0.08588726873174346,
+          "snapshot_payload_bytes": 57532485,
+          "snapshot_stored_bytes": 4941308,
+          "source_index_build_ms": null,
+          "source_persist_ms": 150.136958,
+          "source_scan_ms": 137.087833,
+          "start_scan_accept_ms": 8.205083082430065,
+          "state_database_bytes": 4988928,
+          "state_shm_bytes": 32768,
+          "state_total_bytes": 10097568,
+          "state_wal_bytes": 5075872,
+          "trial": 1,
+          "warm_list_children_ms": 270.3736670082435,
+          "warm_query_descendants_ms": 283.0143750179559
+        },
+        {
+          "children_returned": 100,
+          "complete": true,
+          "descendants_returned": 500,
+          "directories": 101,
+          "files": 100000,
+          "first_list_children_ms": 280.50791600253433,
+          "first_query_descendants_ms": 289.35429197736084,
+          "get_scan_ms": 6.894042016938329,
+          "issue_count": 0,
+          "logical_bytes": 12800000,
+          "poll_count": 7,
+          "poll_rpc_total_ms": 59.64266799855977,
+          "progress_writes": 2,
+          "rss_samples": 15,
+          "sampled_max_rss_bytes": 206471168,
+          "scan_terminal_ms": 388.111500069499,
+          "snapshot_compression_ratio": 0.08588714706135152,
+          "snapshot_payload_bytes": 57532485,
+          "snapshot_stored_bytes": 4941301,
+          "source_index_build_ms": null,
+          "source_persist_ms": 172.789459,
+          "source_scan_ms": 144.77641699999998,
+          "start_scan_accept_ms": 7.644667057320476,
+          "state_database_bytes": 4988928,
+          "state_shm_bytes": 32768,
+          "state_total_bytes": 10097568,
+          "state_wal_bytes": 5075872,
+          "trial": 2,
+          "warm_list_children_ms": 272.25487492978573,
+          "warm_query_descendants_ms": 286.1884579760954
+        },
+        {
+          "children_returned": 100,
+          "complete": true,
+          "descendants_returned": 500,
+          "directories": 101,
+          "files": 100000,
+          "first_list_children_ms": 297.31562500819564,
+          "first_query_descendants_ms": 294.62204105220735,
+          "get_scan_ms": 22.97470800112933,
+          "issue_count": 0,
+          "logical_bytes": 12800000,
+          "poll_count": 6,
+          "poll_rpc_total_ms": 217.73529110942036,
+          "progress_writes": 2,
+          "rss_samples": 17,
+          "sampled_max_rss_bytes": 205832192,
+          "scan_terminal_ms": 502.14554101694375,
+          "snapshot_compression_ratio": 0.08588702539095956,
+          "snapshot_payload_bytes": 57532485,
+          "snapshot_stored_bytes": 4941294,
+          "source_index_build_ms": null,
+          "source_persist_ms": 277.508625,
+          "source_scan_ms": 146.402208,
+          "start_scan_accept_ms": 9.46154200937599,
+          "state_database_bytes": 4988928,
+          "state_shm_bytes": 32768,
+          "state_total_bytes": 10097568,
+          "state_wal_bytes": 5075872,
+          "trial": 3,
+          "warm_list_children_ms": 285.15337500721216,
+          "warm_query_descendants_ms": 281.3742500729859
+        },
+        {
+          "children_returned": 100,
+          "complete": true,
+          "descendants_returned": 500,
+          "directories": 101,
+          "files": 100000,
+          "first_list_children_ms": 286.12137504387647,
+          "first_query_descendants_ms": 291.91879101563245,
+          "get_scan_ms": 10.157249984331429,
+          "issue_count": 0,
+          "logical_bytes": 12800000,
+          "poll_count": 6,
+          "poll_rpc_total_ms": 63.25566710438579,
+          "progress_writes": 2,
+          "rss_samples": 15,
+          "sampled_max_rss_bytes": 205848576,
+          "scan_terminal_ms": 357.1913340128958,
+          "snapshot_compression_ratio": 0.08588709491689782,
+          "snapshot_payload_bytes": 57532485,
+          "snapshot_stored_bytes": 4941298,
+          "source_index_build_ms": null,
+          "source_persist_ms": 151.211083,
+          "source_scan_ms": 128.223667,
+          "start_scan_accept_ms": 9.320541052147746,
+          "state_database_bytes": 4988928,
+          "state_shm_bytes": 32768,
+          "state_total_bytes": 10097568,
+          "state_wal_bytes": 5075872,
+          "trial": 4,
+          "warm_list_children_ms": 281.08854102902114,
+          "warm_query_descendants_ms": 289.6362090250477
+        },
+        {
+          "children_returned": 100,
+          "complete": true,
+          "descendants_returned": 500,
+          "directories": 101,
+          "files": 100000,
+          "first_list_children_ms": 274.82133300509304,
+          "first_query_descendants_ms": 281.1040839878842,
+          "get_scan_ms": 8.898791042156518,
+          "issue_count": 0,
+          "logical_bytes": 12800000,
+          "poll_count": 6,
+          "poll_rpc_total_ms": 80.79616690520197,
+          "progress_writes": 2,
+          "rss_samples": 15,
+          "sampled_max_rss_bytes": 153649152,
+          "scan_terminal_ms": 370.75983290560544,
+          "snapshot_compression_ratio": 0.08588700800947499,
+          "snapshot_payload_bytes": 57532485,
+          "snapshot_stored_bytes": 4941293,
+          "source_index_build_ms": null,
+          "source_persist_ms": 154.10120899999998,
+          "source_scan_ms": 142.30325,
+          "start_scan_accept_ms": 8.487042039632797,
+          "state_database_bytes": 4988928,
+          "state_shm_bytes": 32768,
+          "state_total_bytes": 10097568,
+          "state_wal_bytes": 5075872,
+          "trial": 5,
+          "warm_list_children_ms": 267.99387496430427,
+          "warm_query_descendants_ms": 279.5979160582647
+        }
+      ]
+    },
+    "reference": {
+      "sha256": "d333740d492bda2813a3e5ef79b083f51c42f011fd00bb28e8812aa1a3193a20",
+      "summary": {
+        "children_returned": {
+          "median": 100,
+          "p95": 100
+        },
+        "descendants_returned": {
+          "median": 500,
+          "p95": 500
+        },
+        "directories": {
+          "median": 101,
+          "p95": 101
+        },
+        "files": {
+          "median": 100000,
+          "p95": 100000
+        },
+        "first_list_children_ms": {
+          "median": 80.9902079636231,
+          "p95": 91.43366699572653
+        },
+        "first_query_descendants_ms": {
+          "median": 85.43650002684444,
+          "p95": 101.21345799416304
+        },
+        "get_scan_ms": {
+          "median": 8.127375040203333,
+          "p95": 9.58554190583527
+        },
+        "issue_count": {
+          "median": 0,
+          "p95": 0
+        },
+        "logical_bytes": {
+          "median": 12800000,
+          "p95": 12800000
+        },
+        "poll_count": {
+          "median": 4,
+          "p95": 5
+        },
+        "poll_rpc_total_ms": {
+          "median": 600.0274169491604,
+          "p95": 648.471208056435
+        },
+        "progress_writes": {
+          "median": 2,
+          "p95": 2
+        },
+        "rss_samples": {
+          "median": 12,
+          "p95": 12
+        },
+        "sampled_max_rss_bytes": {
+          "median": 309395456,
+          "p95": 311427072
+        },
+        "scan_terminal_ms": {
+          "median": 821.7473749537021,
+          "p95": 835.4634169954807
+        },
+        "snapshot_compression_ratio": {
+          "median": 1.0,
+          "p95": 1.0
+        },
+        "snapshot_payload_bytes": {
+          "median": 57532485,
+          "p95": 57532485
+        },
+        "snapshot_stored_bytes": {
+          "median": 57532485,
+          "p95": 57532485
+        },
+        "source_index_build_ms": null,
+        "source_persist_ms": {
+          "median": 598.759792,
+          "p95": 623.400375
+        },
+        "source_scan_ms": {
+          "median": 134.48254200000002,
+          "p95": 151.483167
+        },
+        "start_scan_accept_ms": {
+          "median": 7.8254579566419125,
+          "p95": 9.316083043813705
+        },
+        "state_database_bytes": {
+          "median": 57638912,
+          "p95": 57638912
+        },
+        "state_shm_bytes": {
+          "median": 131072,
+          "p95": 131072
+        },
+        "state_total_bytes": {
+          "median": 115804336,
+          "p95": 115804336
+        },
+        "state_wal_bytes": {
+          "median": 58034352,
+          "p95": 58034352
+        },
+        "warm_list_children_ms": {
+          "median": 63.04820906370878,
+          "p95": 68.06825008243322
+        },
+        "warm_query_descendants_ms": {
+          "median": 75.78041707165539,
+          "p95": 78.25254101771861
+        }
+      },
+      "trials": [
+        {
+          "children_returned": 100,
+          "complete": true,
+          "descendants_returned": 500,
+          "directories": 101,
+          "files": 100000,
+          "first_list_children_ms": 75.32729196827859,
+          "first_query_descendants_ms": 80.4950000019744,
+          "get_scan_ms": 8.548166952095926,
+          "issue_count": 0,
+          "logical_bytes": 12800000,
+          "poll_count": 4,
+          "poll_rpc_total_ms": 619.1036249510944,
+          "progress_writes": 2,
+          "rss_samples": 12,
+          "sampled_max_rss_bytes": 307855360,
+          "scan_terminal_ms": 806.5250419313088,
+          "snapshot_compression_ratio": 1.0,
+          "snapshot_payload_bytes": 57532485,
+          "snapshot_stored_bytes": 57532485,
+          "source_index_build_ms": null,
+          "source_persist_ms": 598.759792,
+          "source_scan_ms": 131.074209,
+          "start_scan_accept_ms": 7.446457981131971,
+          "state_database_bytes": 57638912,
+          "state_shm_bytes": 131072,
+          "state_total_bytes": 115804336,
+          "state_wal_bytes": 58034352,
+          "trial": 1,
+          "warm_list_children_ms": 63.74762509949505,
+          "warm_query_descendants_ms": 76.11541694495827
+        },
+        {
+          "children_returned": 100,
+          "complete": true,
+          "descendants_returned": 500,
+          "directories": 101,
+          "files": 100000,
+          "first_list_children_ms": 91.43366699572653,
+          "first_query_descendants_ms": 101.21345799416304,
+          "get_scan_ms": 8.127375040203333,
+          "issue_count": 0,
+          "logical_bytes": 12800000,
+          "poll_count": 5,
+          "poll_rpc_total_ms": 600.0274169491604,
+          "progress_writes": 2,
+          "rss_samples": 12,
+          "sampled_max_rss_bytes": 311427072,
+          "scan_terminal_ms": 830.0559999188408,
+          "snapshot_compression_ratio": 1.0,
+          "snapshot_payload_bytes": 57532485,
+          "snapshot_stored_bytes": 57532485,
+          "source_index_build_ms": null,
+          "source_persist_ms": 607.899125,
+          "source_scan_ms": 151.215625,
+          "start_scan_accept_ms": 7.8254579566419125,
+          "state_database_bytes": 57638912,
+          "state_shm_bytes": 131072,
+          "state_total_bytes": 115804336,
+          "state_wal_bytes": 58034352,
+          "trial": 2,
+          "warm_list_children_ms": 63.04820906370878,
+          "warm_query_descendants_ms": 74.25216701813042
+        },
+        {
+          "children_returned": 100,
+          "complete": true,
+          "descendants_returned": 500,
+          "directories": 101,
+          "files": 100000,
+          "first_list_children_ms": 76.34291693102568,
+          "first_query_descendants_ms": 81.86704106628895,
+          "get_scan_ms": 9.58554190583527,
+          "issue_count": 0,
+          "logical_bytes": 12800000,
+          "poll_count": 4,
+          "poll_rpc_total_ms": 595.45233391691,
+          "progress_writes": 2,
+          "rss_samples": 11,
+          "sampled_max_rss_bytes": 309395456,
+          "scan_terminal_ms": 768.2368750683963,
+          "snapshot_compression_ratio": 1.0,
+          "snapshot_payload_bytes": 57532485,
+          "snapshot_stored_bytes": 57532485,
+          "source_index_build_ms": null,
+          "source_persist_ms": 569.04825,
+          "source_scan_ms": 130.250583,
+          "start_scan_accept_ms": 7.681417046114802,
+          "state_database_bytes": 57638912,
+          "state_shm_bytes": 131072,
+          "state_total_bytes": 115804336,
+          "state_wal_bytes": 58034352,
+          "trial": 3,
+          "warm_list_children_ms": 61.60516699310392,
+          "warm_query_descendants_ms": 74.39662492834032
+        },
+        {
+          "children_returned": 100,
+          "complete": true,
+          "descendants_returned": 500,
+          "directories": 101,
+          "files": 100000,
+          "first_list_children_ms": 82.03133300412446,
+          "first_query_descendants_ms": 86.76895801909268,
+          "get_scan_ms": 8.039416978135705,
+          "issue_count": 0,
+          "logical_bytes": 12800000,
+          "poll_count": 5,
+          "poll_rpc_total_ms": 593.1466649053618,
+          "progress_writes": 2,
+          "rss_samples": 12,
+          "sampled_max_rss_bytes": 309100544,
+          "scan_terminal_ms": 821.7473749537021,
+          "snapshot_compression_ratio": 1.0,
+          "snapshot_payload_bytes": 57532485,
+          "snapshot_stored_bytes": 57532485,
+          "source_index_build_ms": null,
+          "source_persist_ms": 592.058584,
+          "source_scan_ms": 151.483167,
+          "start_scan_accept_ms": 9.316083043813705,
+          "state_database_bytes": 57638912,
+          "state_shm_bytes": 131072,
+          "state_total_bytes": 115804336,
+          "state_wal_bytes": 58034352,
+          "trial": 4,
+          "warm_list_children_ms": 68.06825008243322,
+          "warm_query_descendants_ms": 78.25254101771861
+        },
+        {
+          "children_returned": 100,
+          "complete": true,
+          "descendants_returned": 500,
+          "directories": 101,
+          "files": 100000,
+          "first_list_children_ms": 80.9902079636231,
+          "first_query_descendants_ms": 85.43650002684444,
+          "get_scan_ms": 7.49850005377084,
+          "issue_count": 0,
+          "logical_bytes": 12800000,
+          "poll_count": 4,
+          "poll_rpc_total_ms": 648.471208056435,
+          "progress_writes": 2,
+          "rss_samples": 12,
+          "sampled_max_rss_bytes": 309411840,
+          "scan_terminal_ms": 835.4634169954807,
+          "snapshot_compression_ratio": 1.0,
+          "snapshot_payload_bytes": 57532485,
+          "snapshot_stored_bytes": 57532485,
+          "source_index_build_ms": null,
+          "source_persist_ms": 623.400375,
+          "source_scan_ms": 134.48254200000002,
+          "start_scan_accept_ms": 8.444583043456078,
+          "state_database_bytes": 57638912,
+          "state_shm_bytes": 131072,
+          "state_total_bytes": 115804336,
+          "state_wal_bytes": 58034352,
+          "trial": 5,
+          "warm_list_children_ms": 62.87137500476092,
+          "warm_query_descendants_ms": 75.78041707165539
+        }
+      ]
+    }
+  },
+  "candidate_over_reference_median_ratio": {
+    "children_returned": 1.0,
+    "descendants_returned": 1.0,
+    "directories": 1.0,
+    "files": 1.0,
+    "first_list_children_ms": 3.5233683207360342,
+    "first_query_descendants_ms": 3.38710280574095,
+    "get_scan_ms": 1.094915762855443,
+    "issue_count": null,
+    "logical_bytes": 1.0,
+    "poll_count": 1.5,
+    "poll_rpc_total_ms": 0.13465412516649675,
+    "progress_writes": 1.0,
+    "rss_samples": 1.25,
+    "sampled_max_rss_bytes": 0.6653251429781826,
+    "scan_terminal_ms": 0.4511846879054458,
+    "snapshot_compression_ratio": 0.08588709491689782,
+    "snapshot_payload_bytes": 1.0,
+    "snapshot_stored_bytes": 0.08588709491689782,
+    "source_index_build_ms": null,
+    "source_persist_ms": 0.2573673300360823,
+    "source_scan_ms": 1.058154076236899,
+    "start_scan_accept_ms": 1.0845425388081422,
+    "state_database_bytes": 0.08655486071631609,
+    "state_shm_bytes": 0.25,
+    "state_total_bytes": 0.08719507704789223,
+    "state_wal_bytes": 0.08746323212155449,
+    "warm_list_children_ms": 4.318201563103535,
+    "warm_query_descendants_ms": 3.7346637291577203
+  },
+  "configuration": {
+    "children_limit": 100,
+    "descendants_limit": 500,
+    "measured_runs_per_binary": 5,
+    "poll_interval_ms": 50.0,
+    "rss_sample_interval_ms": 100.0,
+    "warmup_runs_per_binary": 1
+  },
+  "created_at_utc": "2026-10-28T14:34:59.310815+00:00",
+  "environment": {
+    "machine": "arm64",
+    "python": "3.14.4",
+    "release": "25.6.0",
+    "system": "Darwin"
+  },
+  "measurement_notes": [
+    "Warm filesystem cache; operating-system caches are not cleared.",
+    "Each trial starts an owned service with fresh state outside the scan root.",
+    "Service startup, fixture generation, inventory and cleanup are outside timings.",
+    "RPC timings include diagnostic CLI process startup, IPC and JSON parsing.",
+    "Scan terminal timing starts before start_scan and ends when a terminal poll returns.",
+    "Polling CLI process time and nonterminal poll sleeps are included in scan terminal timing.",
+    "First children, first descendants, warm children and warm descendants run sequentially.",
+    "Sampled maximum RSS is an observed ps sample, not the service process peak; null if unavailable.",
+    "Database sizes include SQLite, WAL and SHM while the service remains alive; no checkpoint is forced.",
+    "Snapshot original JSON and stored payload bytes sum legacy entities and snapshot_blobs outside timings.",
+    "Optional source timings and progress writes come from terminal job.result; null for older services.",
+    "No GUI startup, chart layout, drawing or 650ms GUI polling delay is measured."
+  ],
+  "schema_version": 1,
+  "source": {
+    "expected": {
+      "directories": 101,
+      "files": 100000,
+      "logical_bytes": 12800000
+    },
+    "kind": "generated_small_files"
+  },
+  "trial_order": [
+    {
+      "binary_sha256": "d333740d492bda2813a3e5ef79b083f51c42f011fd00bb28e8812aa1a3193a20",
+      "trial": 1
+    },
+    {
+      "binary_sha256": "6deefd6e833182c7d6aef6e947044a0597e73026ba1f1441f1cc1f654bfe24c4",
+      "trial": 1
+    },
+    {
+      "binary_sha256": "6deefd6e833182c7d6aef6e947044a0597e73026ba1f1441f1cc1f654bfe24c4",
+      "trial": 2
+    },
+    {
+      "binary_sha256": "d333740d492bda2813a3e5ef79b083f51c42f011fd00bb28e8812aa1a3193a20",
+      "trial": 2
+    },
+    {
+      "binary_sha256": "d333740d492bda2813a3e5ef79b083f51c42f011fd00bb28e8812aa1a3193a20",
+      "trial": 3
+    },
+    {
+      "binary_sha256": "6deefd6e833182c7d6aef6e947044a0597e73026ba1f1441f1cc1f654bfe24c4",
+      "trial": 3
+    },
+    {
+      "binary_sha256": "6deefd6e833182c7d6aef6e947044a0597e73026ba1f1441f1cc1f654bfe24c4",
+      "trial": 4
+    },
+    {
+      "binary_sha256": "d333740d492bda2813a3e5ef79b083f51c42f011fd00bb28e8812aa1a3193a20",
+      "trial": 4
+    },
+    {
+      "binary_sha256": "d333740d492bda2813a3e5ef79b083f51c42f011fd00bb28e8812aa1a3193a20",
+      "trial": 5
+    },
+    {
+      "binary_sha256": "6deefd6e833182c7d6aef6e947044a0597e73026ba1f1441f1cc1f654bfe24c4",
+      "trial": 5
+    }
+  ]
+}

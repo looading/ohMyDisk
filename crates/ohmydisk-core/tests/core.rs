@@ -270,3 +270,199 @@ fn native_path_roundtrip_and_link_boundary() {
     assert!(s.nodes.len() < 10);
     assert!(!s.complete);
 }
+
+struct StreamingPlatform {
+    produced: std::sync::atomic::AtomicUsize,
+    metadata_calls: std::sync::atomic::AtomicUsize,
+    errors: bool,
+}
+impl Platform for StreamingPlatform {
+    fn metadata(&self, path: &Path) -> io::Result<FileInfo> {
+        self.metadata_calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        TestPlatform.metadata(path)
+    }
+    fn volumes(&self) -> io::Result<Vec<Volume>> {
+        Ok(Vec::new())
+    }
+    fn trash(&self, _: &Path) -> io::Result<()> {
+        Err(io::Error::other("not used"))
+    }
+    fn reveal(&self, _: &Path) -> io::Result<()> {
+        Err(io::Error::other("not used"))
+    }
+    fn protected_paths(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
+    fn read_directory(
+        &self,
+        path: &Path,
+        visit: &mut dyn FnMut(DirectoryEvent) -> bool,
+    ) -> io::Result<()> {
+        let parent = TestPlatform.metadata(path)?;
+        if self.errors {
+            if !visit(DirectoryEvent::Error(io::Error::other(
+                "partial directory error",
+            ))) {
+                return Ok(());
+            }
+            if !visit(DirectoryEvent::Entry(ScanEntry {
+                path: path.join("denied"),
+                info: Some(Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "denied",
+                ))),
+            })) {
+                return Ok(());
+            }
+        }
+        for i in 0..if self.errors { 1 } else { 100_000 } {
+            self.produced
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let entry = ScanEntry {
+                path: path.join(format!("file-{i}")),
+                info: Some(Ok(FileInfo {
+                    kind: NodeKind::File,
+                    logical_bytes: 1,
+                    allocated_bytes: Some(0),
+                    modified_ns: Some(0),
+                    identity: format!("virtual-{i}"),
+                    volume_id: parent.volume_id.clone(),
+                    link_count: 1,
+                    is_link_or_reparse: false,
+                })),
+            };
+            if !visit(DirectoryEvent::Entry(entry)) {
+                break;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn streaming_metadata_is_reused_and_cancel_stops_enumeration() {
+    let root = tempfile::tempdir().unwrap();
+    let platform = StreamingPlatform {
+        produced: 0.into(),
+        metadata_calls: 0.into(),
+        errors: false,
+    };
+    let cancelled = AtomicBool::new(false);
+    let snapshot = ohmydisk_core::scan::scan(root.path(), &platform, &cancelled, &mut |p| {
+        if p.files >= 127 {
+            cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    })
+    .unwrap();
+    assert!(snapshot.cancelled);
+    assert!(!snapshot.complete);
+    assert_eq!(snapshot.nodes.len(), 128);
+    assert_eq!(snapshot.nodes[0].logical_bytes, 127);
+    assert_eq!(
+        platform
+            .metadata_calls
+            .load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
+    assert_eq!(
+        platform.produced.load(std::sync::atomic::Ordering::Relaxed),
+        127
+    );
+}
+
+#[test]
+fn streaming_errors_do_not_hide_later_entries() {
+    let root = tempfile::tempdir().unwrap();
+    let platform = StreamingPlatform {
+        produced: 0.into(),
+        metadata_calls: 0.into(),
+        errors: true,
+    };
+    let snapshot =
+        ohmydisk_core::scan::scan(root.path(), &platform, &false.into(), &mut |_| {}).unwrap();
+    assert!(!snapshot.complete);
+    assert!(!snapshot.cancelled);
+    assert_eq!(snapshot.nodes.len(), 2);
+    assert!(snapshot.nodes[1].complete);
+    assert_eq!(snapshot.nodes[0].logical_bytes, 1);
+    assert!(snapshot.issues.iter().any(|i| i.code == "read_directory"));
+    assert!(
+        snapshot
+            .issues
+            .iter()
+            .any(|i| i.code == "permission_denied")
+    );
+}
+
+#[test]
+fn queued_directory_boundary_is_checked_when_it_is_visited() {
+    struct ChangedVolume {
+        root: PathBuf,
+        changed: AtomicBool,
+        entered: std::sync::atomic::AtomicUsize,
+    }
+    impl Platform for ChangedVolume {
+        fn metadata(&self, path: &Path) -> io::Result<FileInfo> {
+            let mut info = TestPlatform.metadata(path)?;
+            if path == self.root.join("queued")
+                && self.changed.load(std::sync::atomic::Ordering::Relaxed)
+            {
+                info.volume_id = "different-volume".into();
+                info.identity = "different-directory".into();
+            }
+            Ok(info)
+        }
+        fn read_directory(
+            &self,
+            path: &Path,
+            visit: &mut dyn FnMut(DirectoryEvent) -> bool,
+        ) -> io::Result<()> {
+            if path == self.root {
+                visit(DirectoryEvent::Entry(ScanEntry {
+                    path: path.join("queued"),
+                    info: None,
+                }));
+                self.changed
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                Ok(())
+            } else {
+                self.entered
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Err(io::Error::other("Foreign directory must not be enumerated"))
+            }
+        }
+        fn volumes(&self) -> io::Result<Vec<Volume>> {
+            Ok(Vec::new())
+        }
+        fn trash(&self, _: &Path) -> io::Result<()> {
+            Err(io::Error::other("not used"))
+        }
+        fn reveal(&self, _: &Path) -> io::Result<()> {
+            Err(io::Error::other("not used"))
+        }
+        fn protected_paths(&self) -> Vec<PathBuf> {
+            Vec::new()
+        }
+    }
+    let fixture = tempfile::tempdir().unwrap();
+    std::fs::create_dir(fixture.path().join("queued")).unwrap();
+    let platform = ChangedVolume {
+        root: std::fs::canonicalize(fixture.path()).unwrap(),
+        changed: false.into(),
+        entered: 0.into(),
+    };
+    let snapshot =
+        ohmydisk_core::scan::scan(fixture.path(), &platform, &false.into(), &mut |_| {}).unwrap();
+    assert_eq!(
+        platform.entered.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    assert!(!snapshot.complete);
+    assert!(
+        snapshot
+            .issues
+            .iter()
+            .any(|issue| issue.code == "boundary_skipped")
+    );
+}
