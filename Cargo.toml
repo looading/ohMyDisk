@@ -1,0 +1,32 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2"
+base64 = "0.22"
+sha2 = "0.10"
+tempfile = "3"
+ohmydisk-core = { path = "crates/ohmydisk-core" }
+ohmydisk-platform = { path = "crates/ohmydisk-platform" }
+ohmydisk-service = { path = "crates/ohmydisk-service" }
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[profile.release]
+lto = "thin"
+strip = true

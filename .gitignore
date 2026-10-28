@@ -1,0 +1,6 @@
+/target/
+*.sock
+.DS_Store
+/.ohmydisk/
+/dist/
+__pycache__/

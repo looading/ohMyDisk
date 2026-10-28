@@ -1,0 +1,22 @@
+[package]
+name = "ohmydisk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ohmydisk-core.workspace = true
+ohmydisk-platform.workspace = true
+ohmydisk-service.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+clap = { version = "4", features = ["derive"] }
+rmcp = { version = "=3.8.0", default-features = false, features = ["server", "transport-io"] }
+iced = { version = "0.14", default-features = false, features = ["tiny-skia", "canvas", "tokio", "advanced"] }
+rfd = "0.17"
+dirs = "6"
+
+[lints]
+workspace = true

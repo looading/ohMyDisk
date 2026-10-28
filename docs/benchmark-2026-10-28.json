@@ -1,0 +1,9 @@
+{
+  "configuration": "debug; local APFS; 100 subdirectories; includes startup and polling",
+  "files": 10000,
+  "bytes": 1280000,
+  "state": "completed",
+  "elapsed_seconds": 0.505,
+  "observed_service_peak_rss_kib": 42976,
+  "memory_note": "RSS sampled, not guaranteed process peak"
+}

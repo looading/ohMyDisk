@@ -1,0 +1,163 @@
+name: build-and-release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  MACOSX_DEPLOYMENT_TARGET: "13.0"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  native:
+    name: ${{ matrix.artifact }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            artifact: ohMyDisk-windows-x86_64
+            binary-suffix: .exe
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            artifact: ohMyDisk-macos-aarch64
+            binary-suffix: ""
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            artifact: ohMyDisk-macos-x86_64
+            binary-suffix: ""
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.13"
+      - name: Validate release tag and package version
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: python scripts/package.py --check-version-only --tag "$RELEASE_TAG"
+      - name: Install Rust toolchain
+        id: rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+          rustup target add "${{ matrix.target }}"
+          echo "version=$(rustc --version)" >> "$GITHUB_OUTPUT"
+      - name: Cache Cargo dependencies and build outputs
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}-${{ hashFiles('**/*.rs', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}-
+            ${{ runner.os }}-${{ runner.arch }}-cargo-${{ steps.rust.outputs.version }}-
+      - name: Check Rust formatting
+        run: cargo fmt --all --check
+      - name: Check Rust code
+        run: cargo clippy --locked --workspace --all-targets --target "${{ matrix.target }}"
+      - name: Test Rust workspace
+        run: cargo test --locked --workspace --target "${{ matrix.target }}"
+      - name: Test packaging
+        run: python -m unittest discover -s tests -p 'test_package.py' -v
+      - name: Build release executable
+        run: cargo build --locked --release -p ohmydisk --target "${{ matrix.target }}"
+      - name: Smoke test MCP with isolated temporary fixtures and native recycle bin
+        timeout-minutes: 5
+        run: python tests/mcp_smoke.py "target/${{ matrix.target }}/release/ohmydisk${{ matrix.binary-suffix }}" --trash
+      - name: Package tested executable
+        run: python scripts/package.py --skip-build --target "${{ matrix.target }}"
+      - name: Upload downloadable ZIP and SHA256
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/${{ matrix.artifact }}.zip
+            dist/${{ matrix.artifact }}.zip.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'looading/ohMyDisk'
+    needs: native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.13"
+      - name: Validate release version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python scripts/package.py --check-version-only --tag "$RELEASE_TAG"
+      - name: Download tested packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: ohMyDisk-*
+          merge-multiple: true
+          path: dist
+      - name: Verify complete release assets and checksums
+        run: |
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          expected = {
+              f"ohMyDisk-{target}.zip"
+              for target in ("windows-x86_64", "macos-aarch64", "macos-x86_64")
+          }
+          dist = Path("dist")
+          actual = {path.name for path in dist.iterdir()}
+          required = expected | {f"{name}.sha256" for name in expected}
+          if actual != required:
+              raise SystemExit(f"Release asset mismatch: expected={required}, actual={actual}")
+          for name in sorted(expected):
+              with (dist / name).open("rb") as source:
+                  digest = hashlib.file_digest(source, "sha256").hexdigest()
+              if (dist / f"{name}.sha256").read_text(encoding="utf-8") != f"{digest}  {name}\n":
+                  raise SystemExit(f"SHA256 verification failed: {name}")
+              print(f"Verified {name}")
+          PY
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/*.zip dist/*.zip.sha256 --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            release_options=()
+            if [[ "$RELEASE_TAG" == *-* ]]; then
+              release_options+=(--prerelease)
+            fi
+            gh release create "$RELEASE_TAG" dist/*.zip dist/*.zip.sha256 \
+              --repo "$GITHUB_REPOSITORY" --verify-tag --title "ohMyDisk $RELEASE_TAG" \
+              --generate-notes "${release_options[@]}"
+          fi
