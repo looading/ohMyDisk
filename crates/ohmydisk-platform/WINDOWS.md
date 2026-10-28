@@ -1,9 +1,17 @@
 # Windows platform validation
 
-The Windows Rust code has been cross-checked from macOS with Rust 1.94.1 and
-`x86_64-pc-windows-msvc`. This checks the app, GUI, MCP, service, metadata, IPC,
-and recycle-only COM integration. It is not evidence of Windows linking,
-installation, execution, or availability on every filesystem.
+The native [Windows CI job for 3709886](https://github.com/looading/ohMyDisk/actions/runs/40686597761/job/122810424680)
+passed on windows-2022: 27 Rust tests, 6 packaging tests, bundled SQLite compilation,
+release linking, real MCP scanning, permanent deletion and local-file recycling.
+It also verified mode isolation, adapter reconnection, idempotency, refreshed snapshots
+and temporary-fixture cleanup. This does not establish GUI usability or availability
+on every filesystem.
+
+The hosted runner prohibits Job Object breakaway. CI therefore supervises its own
+`service --stay-alive` process while exercising the same real MCP and recycle APIs.
+The production automatic-spawn flags remain unchanged. A restricted agent host can
+connect to a service explicitly kept running in a separate terminal; see
+[MCP host setup](../../docs/mcp.md#受限-windows-宿主).
 
 ## Recycle-only operation
 
@@ -28,8 +36,8 @@ destination, denied access, unsupported volume, or transfer error returns an
 error. A no-UI `ITransferAdviseSink` refuses overwrite/encryption confirmations
 and returns failures to the caller. Success requires a returned recycled item.
 
-This code has **not run on Windows**. A real Windows test must verify a normal
-local file and directory, long/native UTF-16 names, a disabled/unavailable
+Normal local-file recycling has run successfully on Windows CI. Additional tests
+must cover directories, long/native UTF-16 names, a disabled/unavailable
 Recycle Bin, capacity exhaustion, removable media, denied access, and namespace
 handlers that do not implement recycling. A method unsupported by a particular
 namespace may fail even when Explorer offers a different recycling route; that
@@ -64,6 +72,6 @@ cargo check --workspace --all-targets --target x86_64-pc-windows-msvc
 
 These variables are not saved to repository configuration. The include directory
 is a local header location; no host SQLite library is linked into a Windows
-binary. SQLite C compilation, its Windows ABI, the Windows linker, COM behavior,
-and GUI/IPC runtime behavior remain the responsibility of Windows CI or a real
-Windows machine.
+binary. Native CI now covers SQLite C compilation, Windows linking, IPC and the
+normal-file COM recycling path. GUI behavior and the edge cases above still need
+separate Windows coverage.

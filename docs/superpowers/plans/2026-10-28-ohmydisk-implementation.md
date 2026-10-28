@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust edition 2024，最低 Rust 1.88，iced 0.14，Tokio，serde，SQLite，rmcp；平台实现使用 Rust 标准库和系统适配 crate。
 
-**Execution status:** 核心、平台、本地服务、MCP 和 GUI 已实现并完成本机验证，详情见 ../../verification-2026-10-28.md。Windows Rust 检查已完成；原生链接、系统回收站与 GUI 运行仍需 Windows CI 或实体机验证。图表拖放自动化尚未得到成功证据。
+**Execution status:** 核心、平台、本地服务、MCP 和 GUI 已实现。Windows x64、macOS Apple Silicon 与 Intel 的原生构建、单测和真实 MCP 清理均已通过 GitHub CI，详情见 ../../verification-2026-10-28.md。Windows GUI 人工走查、复杂回收场景和图表拖放仍需独立验收。
 
 
 ## 实施结果
@@ -19,7 +19,8 @@
 - [x] 本地共享服务、连接恢复、GUI 与 MCP 入口。
 - [x] 本机 26 项测试与真实临时文件 MCP 清理验证。
 - [x] macOS release 应用与 ZIP，以及两平台 CI 配置。
-- [ ] Windows 原生链接与实际运行，需 CI 或实体机。
+- [x] Windows 原生链接、真实 MCP 扫描及系统回收，已通过 CI 的受监督服务模式。
+- [ ] Windows 图形界面与复杂回收场景的人工验收。
 - [ ] 图表拖放手势实际验收，按钮加入收集已验证。
 
 以下保留原执行步骤，实际证据以验证记录为准。

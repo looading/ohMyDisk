@@ -2,9 +2,25 @@
 
 日期：2026-10-28
 
-本轮交付可运行的 macOS 应用、本地 MCP 服务、Windows 平台实现与 CI 配置。Windows 已进行 Rust 跨目标检查，尚无 Windows 链接与运行证据。
+本记录包括初期本机验证和后续 GitHub 原生验证。当前已在 Windows x64、macOS Apple Silicon 与 Intel runner 上完成原生构建、测试、MCP 清理和产物上传。
 
-## 本机验证
+## GitHub 原生验证
+
+[完整 CI run 40686597761](https://github.com/looading/ohMyDisk/actions/runs/40686597761) 对提交 3709886 的三个原生任务均已通过。
+
+| 平台 | Rust 测试 | 打包测试 | 真实 MCP | 产物 |
+|---|---|---|---|---|
+| Windows x64 | 27 通过 | 6 通过 | supervised 服务，17 工具及两种真实清理通过 | ZIP 与 SHA256 已上传 |
+| macOS Apple Silicon | 28 通过 | 6 通过 | auto 服务，17 工具及两种真实清理通过 | ZIP 与 SHA256 已上传 |
+| macOS Intel | 28 通过 | 6 通过 | auto 服务，17 工具及两种真实清理通过 | ZIP 与 SHA256 已上传 |
+
+三个任务都执行格式检查、Clippy、锁定依赖构建、模式隔离、客户端重连、幂等与快照刷新验证。Windows 的正常本地文件回收已实际调用系统 RecycleItem，不是仅编译检查。
+
+GitHub Windows runner 禁止进程脱离 Job Object，因此 CI 显式监督自己的前台临时服务。自动后台服务的脱离要求未放宽；受限宿主可以用 service --stay-alive 连接同一套服务。Windows GUI 人工走查及复杂回收场景仍是单独的覆盖边界。
+
+[v0.1.0 发布运行 40688363332](https://github.com/looading/ohMyDisk/actions/runs/40688363332) 随后再次通过三个原生任务和 Release 发布。正式 Release 包含三份 ZIP 和三份 SHA256 文件，均已下载复核校验值、包内架构及说明文档；macOS 执行权限有效，Windows PE 为 x86_64，未发现动态 Visual C++ 运行库依赖。源码、公开 Git 身份及三份正式产物的全部归档内容均完成公司标识和私有主目录路径检查，无命中。
+
+## 初期本机验证
 
 | 检查 | 实际结果 |
 |---|---|
@@ -33,9 +49,9 @@
 
 已对 x86_64-pc-windows-msvc 执行整个 workspace 与所有测试目标的 cargo check。为在 macOS 上完成 Rust cfg/API 检查，该次检查通过临时环境跳过了 bundled SQLite 的 C 构建，仅使用 crate 自带 Rust bindings 与链接声明；没有提供 Windows SQLite 库，也没有链接可执行文件。
 
-这不能替代 Windows 原生构建、ABI 与运行验证。CI 的 windows-latest 包含正常 bundled SQLite 构建、workspace tests、release build 和带 --trash 的 MCP smoke；当前仓库未连接远端，流水线尚未执行。
+上面的本机方法不能替代原生构建。后续 windows-2022 CI 已实际完成 bundled SQLite C 构建、链接、workspace tests、release build 和 supervised 模式的 --trash MCP smoke，结果见本记录的 GitHub 原生验证部分。
 
-Windows 回收站的命名空间、卷支持、禁用回收站、容量不足、长路径与 GUI 需要 Windows 实体机或 CI 验证。实现与系统契约说明见 [Windows 平台说明](../crates/ohmydisk-platform/WINDOWS.md)。
+不同 Windows 回收站命名空间、卷支持、禁用回收站、容量不足、长路径与 GUI 仍需额外覆盖。实现与系统契约说明见 [Windows 平台说明](../crates/ohmydisk-platform/WINDOWS.md)。
 
 ## 扫描基线
 
