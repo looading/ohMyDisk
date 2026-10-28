@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "commit_sha": "2d8202ddaee2bac09a9a9202ff6f3b3d67a35921",
+  "run_id": 40717898553,
+  "run_attempt": 1,
+  "runner_label": "macos-15-intel",
+  "target": "x86_64-apple-darwin",
+  "rust_toolchain": "1.94.1",
+  "python": "3.13.15",
+  "fixture_profile": "standard",
+  "fixture_sizes": {
+    "small": 100000,
+    "wide": 50000,
+    "mixed": 10000,
+    "depth": 64,
+    "per_level": 64
+  },
+  "measured_runs": 5,
+  "excluded_warmups": 1,
+  "seed": 20261028,
+  "scan_reference": "same release runner with portable enumeration",
+  "service_reference": null,
+  "historical_restart": true,
+  "timing_thresholds": null,
+  "ImageOS": "macos15",
+  "ImageVersion": "20260824.0482.1"
+}

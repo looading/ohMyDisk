@@ -146,6 +146,14 @@ See [independent experiment](results/2026-10-28/iteration-decode-utf8.json) and
 
 ## Reproduce and validate
 
+The [complete native workflow](https://github.com/looading/ohMyDisk/actions/runs/40717898553)
+also passed on Windows x64, macOS Intel and macOS ARM. Its
+[per-platform raw reports and summary](results/native-v0.1.1/README.md) are retained
+in the repository. Those runs use five measured samples and a 64-level deep tree;
+the core reference is the same current binary in portable mode, rather than
+v0.1.0, and service measurements are current-only. They validate the cross-platform
+benchmark flow and must not be substituted for the local old/new tables above.
+
 ```sh
 cargo build --locked --release -p ohmydisk-platform --example scan-bench
 cargo build --locked --release --manifest-path benchmarks/reference/Cargo.toml --target-dir target/reference

@@ -1,0 +1,10 @@
+{
+  "scan": {
+    "validated": true,
+    "exit_code": 0
+  },
+  "service": {
+    "validated": true,
+    "exit_code": 0
+  }
+}
