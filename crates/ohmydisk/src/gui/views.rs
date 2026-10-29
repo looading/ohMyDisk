@@ -785,14 +785,10 @@ impl App {
                     row![
                         text(job_label(&job.work)).size(12).color(GREEN),
                         Space::new().width(Length::Fill),
-                        text(if matches!(job.work, Work::Scan | Work::Refresh) {
-                            format!(
-                                "已用时 {}",
-                                scan_clock::format_duration(job.clock.elapsed_ms())
-                            )
-                        } else {
-                            String::new()
-                        })
+                        text(format!(
+                            "已用时 {}",
+                            scan_clock::format_duration(job.clock.elapsed_ms())
+                        ))
                         .size(12)
                         .color(WHITE)
                     ]

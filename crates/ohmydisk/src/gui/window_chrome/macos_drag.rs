@@ -2,12 +2,15 @@
 //! This view owns no Rust/global window references; AppKit owns it as a subview.
 //! Native caption buttons share the rendered header's vertical center.
 use super::{HEADER_HEIGHT, MACOS_TRAFFIC_LIGHT_WIDTH, PICK_FOLDER_BUTTON_WIDTH};
-use objc2::{ClassType, MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained};
+use objc2::{
+    ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained,
+};
 use objc2_app_kit::{
     NSAutoresizingMaskOptions, NSEvent, NSView, NSWindow, NSWindowButton, NSWindowStyleMask,
 };
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize};
 use raw_window_handle::RawWindowHandle;
+use std::cell::Cell;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 const PICKER_RIGHT_SPACING: f64 = 8.0;
@@ -23,11 +26,11 @@ fn report_setup_once(flag: u8, message: &str) {
 
 define_class!(
     // SAFETY: NSView is subclassable. The class remains MainThreadOnly, adds
-    // only initialized unit ivars, and has no custom Drop/dealloc behavior.
+    // only an initialized reentrancy flag, and has no custom Drop/dealloc.
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[name = "OhMyDiskHeaderDragBand"]
-    #[ivars = ()]
+    #[ivars = Cell<bool>]
     struct HeaderDragBand;
 
     // SAFETY: NSObjectProtocol adds no invariants beyond NSView's superclass.
@@ -57,13 +60,56 @@ define_class!(
         // of an inactive window without claiming keyboard/first-responder focus.
         #[unsafe(method(acceptsFirstMouse:))]
         fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool { true }
+
+        // SAFETY: Exact NSView lifecycle signatures, invoked on the main thread
+        // with a live hierarchy. Superclass behavior completes before alignment.
+        #[unsafe(method(viewDidMoveToWindow))]
+        fn view_did_move_to_window(&self) {
+            unsafe { let _: () = msg_send![super(self), viewDidMoveToWindow]; }
+            self.align_controls();
+        }
+
+        // SAFETY: Exact NSView layout signature; self remains main-thread-only.
+        #[unsafe(method(layout))]
+        fn layout(&self) {
+            unsafe { let _: () = msg_send![super(self), layout]; }
+            self.align_controls();
+        }
+
+        // SAFETY: Exact NSView resizing signature and NSSize ABI.
+        #[unsafe(method(resizeSubviewsWithOldSize:))]
+        fn resize_subviews(&self, old_size: NSSize) {
+            unsafe { let _: () = msg_send![super(self), resizeSubviewsWithOldSize: old_size]; }
+            self.align_controls();
+        }
+
+        // SAFETY: Exact NSView pre-draw callback, still on the main thread.
+        #[unsafe(method(viewWillDraw))]
+        fn view_will_draw(&self) {
+            unsafe { let _: () = msg_send![super(self), viewWillDraw]; }
+            self.align_controls();
+        }
     }
 );
 
 impl HeaderDragBand {
+    fn align_controls(&self) {
+        if self.ivars().replace(true) {
+            return;
+        }
+        // SAFETY: AppKit owns the attached hierarchy throughout this synchronous
+        // main-thread callback. Temporary retains never escape the callback.
+        if let Some(content) = unsafe { self.superview() }
+            && let Some(window) = self.window()
+        {
+            align_native_controls(&content, &window);
+        }
+        self.ivars().set(false);
+    }
+
     fn new(frame: NSRect, mtm: MainThreadMarker) -> Retained<Self> {
-        let allocated = Self::alloc(mtm).set_ivars(());
-        // SAFETY: Unit ivars are initialized, NSView implements initWithFrame:
+        let allocated = Self::alloc(mtm).set_ivars(Cell::new(false));
+        // SAFETY: The flag is initialized, NSView implements initWithFrame:
         // with this exact NSRect ABI, and alloc/initialization stay on the main
         // thread. The returned +1 object is managed by Retained until AppKit
         // retains it through addSubview below.
@@ -107,6 +153,38 @@ fn autoresizing(flipped: bool) -> NSAutoresizingMaskOptions {
         }
 }
 
+fn aligned_container_frame(
+    mut frame: NSRect,
+    current_center_y: f64,
+    target_center_y: f64,
+    parent_flipped: bool,
+) -> Option<NSRect> {
+    // Expanding downward while preserving the top moves the whole native
+    // control group. Its buttons keep AppKit's original bottom inset.
+    let extra_height = if parent_flipped {
+        target_center_y - current_center_y
+    } else {
+        current_center_y - target_center_y
+    };
+    if !frame.origin.x.is_finite()
+        || !frame.origin.y.is_finite()
+        || !frame.size.width.is_finite()
+        || !frame.size.height.is_finite()
+        || frame.size.width <= 0.0
+        || frame.size.height <= 0.0
+        || !extra_height.is_finite()
+        || extra_height.abs() < 0.01
+    {
+        return None;
+    }
+    frame.size.height += extra_height;
+    if !parent_flipped {
+        frame.origin.y -= extra_height;
+    }
+    (frame.origin.y.is_finite() && frame.size.height.is_finite() && frame.size.height > 0.0)
+        .then_some(frame)
+}
+
 fn align_native_controls(content: &NSView, window: &NSWindow) {
     // AppKit manages its own temporary titlebar/button layout in fullscreen.
     // The ordinary resize/focus callback reapplies this after restoration.
@@ -117,32 +195,71 @@ fn align_native_controls(content: &NSView, window: &NSWindow) {
     let Some(header) = drag_bounds(bounds, content.isFlipped()) else {
         return;
     };
-    let center = NSPoint::new(bounds.origin.x, header.origin.y + header.size.height / 2.0);
-    for kind in [
-        NSWindowButton::CloseButton,
-        NSWindowButton::MiniaturizeButton,
-        NSWindowButton::ZoomButton,
-    ] {
-        let Some(button) = window.standardWindowButton(kind) else {
-            continue;
-        };
-        // SAFETY: The retained window owns its live native button hierarchy for
-        // this synchronous main-thread callback. Retain the current superview
-        // only for this iteration; no hierarchy or ownership is changed.
+    let Some(close) = window.standardWindowButton(NSWindowButton::CloseButton) else {
+        return;
+    };
+    let Some(minimize) = window.standardWindowButton(NSWindowButton::MiniaturizeButton) else {
+        return;
+    };
+    let Some(zoom) = window.standardWindowButton(NSWindowButton::ZoomButton) else {
+        return;
+    };
+    // SAFETY: The retained live window owns its native view hierarchy throughout
+    // this synchronous main-thread callback. These temporary retains are local.
+    let Some(bar) = (unsafe { close.superview() }) else {
+        return;
+    };
+    for button in [&minimize, &zoom] {
+        // SAFETY: Same live, retained window hierarchy as above.
         let Some(parent) = (unsafe { button.superview() }) else {
-            continue;
+            return;
         };
-        // The winit content view and native titlebar use different coordinate
-        // systems. Converting the actual content center also handles flipped
-        // content views, nonzero bounds origins and native titlebar dimensions.
-        let target = parent.convertPoint_fromView(center, Some(content));
-        let frame = button.frame();
-        let y = target.y - frame.size.height / 2.0;
-        if y.is_finite() && y != frame.origin.y {
-            // Preserve AppKit's horizontal placement, size, target/action,
-            // accessibility and fullscreen behavior of the original buttons.
-            button.setFrameOrigin(NSPoint::new(frame.origin.x, y));
+        if !std::ptr::eq(&*bar, &*parent) {
+            return;
         }
+    }
+    // Like tao's traffic-light inset, resize the native titlebar container,
+    // preserving its top edge. The container owns native titlebar layout and
+    // drawing; its buttons retain AppKit's original inset within that group.
+    // SAFETY: The same window retains both ancestors for this callback.
+    let Some(container) = (unsafe { bar.superview() }) else {
+        return;
+    };
+    // SAFETY: The same window retains the container's parent for this callback.
+    let Some(parent) = (unsafe { container.superview() }) else {
+        return;
+    };
+    let button_frame = close.frame();
+    let center = NSPoint::new(
+        button_frame.origin.x + button_frame.size.width / 2.0,
+        button_frame.origin.y + button_frame.size.height / 2.0,
+    );
+    let current = parent.convertPoint_fromView(center, Some(&bar));
+    let content_center = content.convertPoint_fromView(center, Some(&bar));
+    let target = parent.convertPoint_fromView(
+        NSPoint::new(content_center.x, header.origin.y + header.size.height / 2.0),
+        Some(content),
+    );
+    let old_frame = container.frame();
+    let Some(frame) = aligned_container_frame(old_frame, current.y, target.y, parent.isFlipped())
+    else {
+        return;
+    };
+    // No button is reparented or resized. Native x/y, target/action,
+    // accessibility and control ownership all remain AppKit's responsibility.
+    container.setFrame(frame);
+    if std::env::var_os("OMD_TRACE_WINDOW_CONTROLS").is_some_and(|value| value == "1") {
+        let actual = content.convertPoint_fromView(center, Some(&bar));
+        let top_distance = if content.isFlipped() {
+            actual.y - bounds.origin.y
+        } else {
+            bounds.origin.y + bounds.size.height - actual.y
+        };
+        eprintln!(
+            "OMD_WINDOW_CONTROLS native_container_before={old_frame:?} native_container_after={:?} button_frame={:?} center_from_content_top={top_distance}",
+            container.frame(),
+            close.frame()
+        );
     }
 }
 
@@ -205,6 +322,30 @@ pub(super) fn install(native: &dyn iced::window::Window) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_container_moves_controls_down_while_preserving_its_top_and_width() {
+        let frame = NSRect::new(NSPoint::new(10.0, 668.0), NSSize::new(1000.0, 32.0));
+        let aligned = aligned_container_frame(frame, 684.0, 676.0, false).unwrap();
+        assert_eq!(aligned.origin, NSPoint::new(10.0, 660.0));
+        assert_eq!(aligned.size, NSSize::new(1000.0, 40.0));
+        assert_eq!(
+            aligned.origin.y + aligned.size.height,
+            frame.origin.y + frame.size.height
+        );
+        assert!(aligned_container_frame(aligned, 676.0, 676.0, false).is_none());
+    }
+
+    #[test]
+    fn flipped_native_parent_keeps_its_top_and_invalid_sizes_cannot_expand() {
+        let frame = NSRect::new(NSPoint::new(10.0, 20.0), NSSize::new(1000.0, 32.0));
+        let aligned = aligned_container_frame(frame, 36.0, 44.0, true).unwrap();
+        assert_eq!(aligned.origin, frame.origin);
+        assert_eq!(aligned.size, NSSize::new(1000.0, 40.0));
+        assert!(aligned_container_frame(frame, f64::NAN, 24.0, true).is_none());
+        assert!(aligned_container_frame(frame, 36.0, f64::INFINITY, true).is_none());
+        assert!(aligned_container_frame(frame, 36.0, 0.0, true).is_none());
+    }
 
     #[test]
     fn header_bounds_preserve_native_controls_picker_and_body_at_all_sizes() {
