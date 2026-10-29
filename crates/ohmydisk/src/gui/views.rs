@@ -15,6 +15,21 @@ fn fitted_modal_size(size: iced::Size, preferred_width: f32, preferred_height: f
         preferred_height.min((size.height - HEADER_HEIGHT - 1.0 - 2.0 * MODAL_MARGIN).max(1.0)),
     )
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CollectorLayout {
+    compact: bool,
+    show_cards: bool,
+    show_hint: bool,
+}
+fn collector_layout(size: iced::Size, expanded: bool) -> CollectorLayout {
+    // Keep summary/actions reachable when the viewport clamps an expanded panel.
+    // Cards need one useful row after the fixed title, actions and padding.
+    CollectorLayout {
+        compact: size.width < COMPACT_WIDTH,
+        show_cards: expanded && size.height >= 150.0,
+        show_hint: expanded && size.height >= 180.0,
+    }
+}
 #[derive(Debug, Clone, Copy)]
 struct CenterLayout {
     amount_size: f32,
@@ -356,7 +371,16 @@ impl App {
         } else {
             body = body.push(column![self.navigation(), self.analysis()].height(Length::Fill));
         }
-        body = body.push(self.collector());
+        let body: Element<'_, Message> = interaction::workspace(
+            body.into(),
+            self.collector(),
+            self.collector_interaction.clone(),
+            self.collector_panel,
+            self.interaction_scope(),
+            self.collection_interaction_enabled(),
+            self.review.is_none() && self.result.is_none(),
+            Message::CollectorInteraction,
+        );
         let body: Element<'_, Message> = container(body)
             .width(Length::Fill)
             .height(Length::Fill)
@@ -897,11 +921,11 @@ impl App {
                 hover: effective_hover.clone(),
                 collected: self.chart_collection_ids(),
                 can_go_up: self.breadcrumbs.len() > 1 && size.width.min(size.height) >= 96.0,
-                drag_label: self
-                    .drag
-                    .as_deref()
-                    .and_then(|id| self.find_node(id))
-                    .map(|node| node.name.as_str()),
+                controller: self.collector_interaction.clone(),
+                scope: self.interaction_scope(),
+                resolve_drag: Box::new(|id| {
+                    self.find_node(id).and_then(|node| self.drag_entry(node))
+                }),
             })
             .width(Length::Fill)
             .height(Length::Fill);
@@ -1182,15 +1206,28 @@ impl App {
             list = list.push(
                 mouse_area(
                     row![
-                        button(label)
-                            .width(Length::Fill)
-                            .padding([10, 7])
-                            .style(move |theme, status| if hovered {
-                                selected_button(theme, status)
-                            } else {
-                                quiet_button(theme, status)
-                            })
-                            .on_press(Message::Navigate(node.id.clone())),
+                        interaction::source(
+                            container(label)
+                                .width(Length::Fill)
+                                .padding([10, 7])
+                                .style(move |theme| {
+                                    let style = if hovered {
+                                        selected_button(theme, button::Status::Hovered)
+                                    } else {
+                                        quiet_button(theme, button::Status::Active)
+                                    };
+                                    container::Style {
+                                        background: style.background,
+                                        border: style.border,
+                                        text_color: Some(style.text_color),
+                                        ..container::Style::default()
+                                    }
+                                })
+                                .into(),
+                            self.collector_interaction.clone(),
+                            self.drag_entry(node),
+                            Message::Navigate(node.id.clone()),
+                        ),
                         add
                     ]
                     .spacing(0)
@@ -1389,16 +1426,12 @@ impl App {
         .into()
     }
     pub(super) fn collector(&self) -> Element<'_, Message> {
-        let compact = self.compact_layout();
-        let dense = compact || self.short_layout();
-        let drag_name = self
-            .drag
-            .as_deref()
-            .and_then(|id| self.find_node(id))
-            .map(|node| node.name.as_str());
-        let summary = if let Some(name) = drag_name {
-            format!("释放以收集「{}」", crop(name, 38))
-        } else if self.collection.is_empty() {
+        iced::widget::responsive(move |size| self.collector_contents(size)).into()
+    }
+    fn collector_contents(&self, size: iced::Size) -> Element<'_, Message> {
+        let layout = collector_layout(size, self.collector_panel.is_expanded());
+        let compact = layout.compact;
+        let summary = if self.collection.is_empty() {
             "拖入项目，或在目录旁点 ＋".into()
         } else {
             let amount = self.collection_amount();
@@ -1442,7 +1475,7 @@ impl App {
         };
         let mut title = row![
             button(
-                text(if self.collector_expanded {
+                text(if self.collector_panel.is_expanded() {
                     "⌄ 收集区"
                 } else {
                     "› 收集区"
@@ -1454,19 +1487,23 @@ impl App {
             .on_press(Message::ToggleCollector),
             text(if compact { crop(&summary, 36) } else { summary })
                 .size(if compact { 10 } else { 12 })
-                .color(if drag_name.is_some() { GREEN } else { MUTED })
+                .color(MUTED)
                 .width(Length::Fill)
         ]
         .spacing(if compact { 8 } else { 13 })
         .align_y(Alignment::Center);
-        if !compact {
-            title = title.push(clear()).push(trash());
-        } else if !self.collector_expanded {
+        if !layout.show_cards {
+            if !compact {
+                title = title.push(clear());
+            }
             title = title.push(trash());
         }
-        let mut body = column![title].spacing(if dense { 7 } else { 12 });
-        if self.collector_expanded {
-            let mut chips = Row::new().spacing(9).align_y(Alignment::Center);
+        let mut body = column![title].spacing(7).height(Length::Fill);
+        if layout.show_cards {
+            let mut chips = Row::new()
+                .width(Length::Fill)
+                .spacing(9)
+                .align_y(Alignment::Center);
             for node in &self.collection {
                 chips = chips.push(
                     container(
@@ -1497,66 +1534,46 @@ impl App {
                         .color(MUTED),
                 );
             }
-            let chips = scrollable(chips)
-                .direction(scrollable::Direction::Horizontal(
-                    scrollable::Scrollbar::default(),
-                ))
+            let cards = scrollable(chips.wrap().vertical_spacing(9))
                 .width(Length::Fill)
-                .height(if dense { 58 } else { 66 });
-            if compact {
-                body = body.push(chips).push(
-                    row![
-                        clear(),
-                        Space::new().width(Length::Fill),
-                        permanent(),
-                        trash()
-                    ]
-                    .spacing(8)
-                    .align_y(Alignment::Center),
-                );
-            } else {
+                .height(Length::Fill);
+            body = body.push(cards).push(
+                row![
+                    clear(),
+                    Space::new().width(Length::Fill),
+                    permanent(),
+                    trash()
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            );
+            if layout.show_hint {
                 body = body.push(
-                    row![chips, permanent()]
-                        .spacing(18)
-                        .align_y(Alignment::Center),
+                    text(if compact {
+                        "实际释放空间以系统观测为准。"
+                    } else {
+                        "收集大小不等于可释放空间；实际变化以清理后的系统观测为准。"
+                    })
+                    .size(10)
+                    .color(MUTED)
+                    .width(Length::Fill),
                 );
             }
-            body = body.push(
-                text(if dense {
-                    "实际释放空间以系统观测为准。"
-                } else {
-                    "收集大小不等于可释放空间；实际变化以清理后的系统观测为准。"
-                })
-                .size(10)
-                .color(MUTED)
-                .width(Length::Fill),
-            );
         }
-        mouse_area(
-            container(body)
-                .padding([if dense { 7 } else { 10 }, if compact { 12 } else { 24 }])
-                .width(Length::Fill)
-                .style(move |_| {
-                    let mut style = panel_style(if self.collector_hover && self.drag.is_some() {
-                        Color::from_rgb(0.10, 0.22, 0.22)
-                    } else {
-                        PANEL
-                    });
-                    style.border = Border {
-                        color: if self.collector_hover && self.drag.is_some() {
-                            GREEN
-                        } else {
-                            Color::from_rgb(0.16, 0.19, 0.25)
-                        },
-                        width: 1.0,
-                        ..Border::default()
-                    };
-                    style
-                }),
-        )
-        .on_enter(Message::CollectorHover(true))
-        .on_exit(Message::CollectorHover(false))
-        .into()
+        container(body)
+            .padding([7, if compact { 12 } else { 24 }])
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_| {
+                let mut style = panel_style(PANEL);
+                style.border = Border {
+                    color: Color::from_rgb(0.16, 0.19, 0.25),
+                    width: 1.0,
+                    ..Border::default()
+                };
+                style
+            })
+            .into()
     }
 }
 fn related_entry(node: &Node) -> bool {
@@ -1598,6 +1615,42 @@ fn space_description(target: &sunburst::Target) -> &'static str {
 mod tests {
     use super::*;
     use ohmydisk_core::{NativePath, NodeSpace};
+    #[test]
+    fn collapsed_and_clamped_collectors_keep_the_summary_without_card_overflow() {
+        for height in [0.0, 48.0, 64.0, 120.0, 149.0] {
+            let layout = collector_layout(iced::Size::new(500.0, height), true);
+            assert!(layout.compact);
+            assert!(!layout.show_cards);
+            assert!(!layout.show_hint);
+        }
+        assert_eq!(
+            collector_layout(iced::Size::new(1370.0, 300.0), false),
+            CollectorLayout {
+                compact: false,
+                show_cards: false,
+                show_hint: false,
+            }
+        );
+    }
+    #[test]
+    fn collector_growth_reveals_cards_before_optional_hint_text() {
+        assert_eq!(
+            collector_layout(iced::Size::new(500.0, 160.0), true),
+            CollectorLayout {
+                compact: true,
+                show_cards: true,
+                show_hint: false,
+            }
+        );
+        assert_eq!(
+            collector_layout(iced::Size::new(500.0, 180.0), true),
+            CollectorLayout {
+                compact: true,
+                show_cards: true,
+                show_hint: true,
+            }
+        );
+    }
     fn node(id: &str, bytes: Option<u64>) -> Node {
         Node {
             id: id.into(),
@@ -1654,6 +1707,160 @@ mod tests {
             .filter(|segment| segment.depth == 0)
             .map(|segment| segment.bytes)
             .sum()
+    }
+    fn drag_review(targets: Vec<Node>) -> ReviewPlan {
+        ReviewPlan {
+            id: "preserved-drag-plan".into(),
+            hash: "preserved-drag-hash".into(),
+            mode: CleanupMode::Permanent,
+            bytes: 100,
+            expires_at: ohmydisk_core::now_ms() + 60_000,
+            targets,
+            manifest: vec![json!({"fixture":"preserved manifest"})],
+            next_cursor: Some("preserved-cursor".into()),
+        }
+    }
+    #[test]
+    fn drop_uses_the_captured_complete_unmeasured_node_after_caches_are_replaced() {
+        let mut app = measured_app("/tmp/fixture", "complete");
+        app.overview = false;
+        let mut captured = node("reused-id", None);
+        captured.kind = NodeKind::File;
+        captured.name = "captured-file".into();
+        captured.identity = "captured-identity".into();
+        captured.path = NativePath::new(std::path::Path::new("/tmp/fixture/captured-file"));
+        app.children = vec![captured.clone()];
+        app.hover = Some(captured.id.clone());
+        let entry = app
+            .drag_entry(&captured)
+            .expect("complete unmeasured entries can be dragged");
+
+        let mut replacement = captured.clone();
+        replacement.name = "replacement-file".into();
+        replacement.identity = "replacement-identity".into();
+        replacement.path = NativePath::new(std::path::Path::new("/tmp/fixture/replacement-file"));
+        app.children = vec![replacement];
+        app.chart_nodes.clear();
+        app.preview_cache.clear();
+        app.preview_owner = Some("different-preview".into());
+        app.hover = Some("different-hover".into());
+        let _ = app.update(Message::CollectorInteraction(interaction::Event::Dropped(
+            entry,
+        )));
+
+        assert_eq!(app.collection.len(), 1);
+        assert_eq!(app.collection[0].id, captured.id);
+        assert_eq!(app.collection[0].identity, captured.identity);
+        assert_eq!(app.collection[0].name, captured.name);
+        assert_eq!(app.collection[0].path.display, captured.path.display);
+        assert!(app.collection[0].space_usage.is_none());
+        assert_eq!(app.collection_amount(), "未测量");
+        assert_eq!(app.draft_scan_id.as_deref(), Some("measured"));
+        assert!(app.collector_panel.is_expanded());
+    }
+    #[test]
+    fn stale_epoch_and_scan_drops_cannot_change_selection_or_an_existing_plan() {
+        for changed_scan in [false, true] {
+            let mut app = measured_app("/tmp/fixture", "complete");
+            app.overview = false;
+            let mut selected = node("selected", Some(100));
+            selected.path = NativePath::new(std::path::Path::new("/tmp/fixture/selected"));
+            app.collection = vec![selected];
+            app.draft_scan_id = Some("measured".into());
+            let mut candidate = node("reused-id", Some(50));
+            candidate.path = NativePath::new(std::path::Path::new("/tmp/fixture/candidate"));
+            let entry = app.drag_entry(&candidate).unwrap();
+            if changed_scan {
+                app.scan.as_mut().unwrap().scan_id = "replacement-scan".into();
+                app.draft_scan_id = Some("replacement-scan".into());
+            } else {
+                app.epoch += 1;
+            }
+            let mut reused = candidate;
+            reused.identity = "new-snapshot-identity".into();
+            reused.path = NativePath::new(std::path::Path::new("/tmp/fixture/new-snapshot-file"));
+            app.children = vec![reused];
+            let selection = serde_json::to_value(&app.collection).unwrap();
+            let draft = app.draft_scan_id.clone();
+
+            let _ = app.update(Message::CollectorInteraction(interaction::Event::Dropped(
+                entry.clone(),
+            )));
+            assert_eq!(serde_json::to_value(&app.collection).unwrap(), selection);
+            assert_eq!(app.draft_scan_id, draft);
+            assert!(app.review.is_none());
+            assert!(!app.collector_panel.is_expanded());
+
+            app.review = Some(drag_review(app.collection.clone()));
+            app.confirm_text = "neutral input".into();
+            let plan = format!("{:?}", app.review);
+            let _ = app.update(Message::CollectorInteraction(interaction::Event::Dropped(
+                entry,
+            )));
+            assert_eq!(serde_json::to_value(&app.collection).unwrap(), selection);
+            assert_eq!(app.draft_scan_id, draft);
+            assert_eq!(format!("{:?}", app.review), plan);
+            assert_eq!(app.confirm_text, "neutral input");
+        }
+    }
+    #[test]
+    fn dropped_entries_share_parent_normalization_and_review_busy_guards() {
+        let mut app = measured_app("/tmp/fixture", "complete");
+        app.overview = false;
+        let mut parent = node("parent", Some(100));
+        parent.path = NativePath::new(std::path::Path::new("/tmp/fixture/parent"));
+        let mut child = node("child", Some(50));
+        child.path = NativePath::new(std::path::Path::new("/tmp/fixture/parent/child"));
+        child.parent_id = Some(parent.id.clone());
+        let parent_entry = app.drag_entry(&parent).unwrap();
+        let child_entry = app.drag_entry(&child).unwrap();
+
+        for _ in 0..2 {
+            let _ = app.update(Message::CollectorInteraction(interaction::Event::Dropped(
+                child_entry.clone(),
+            )));
+            assert_eq!(app.collection.len(), 1);
+            assert_eq!(app.collection[0].id, "child");
+        }
+        let _ = app.update(Message::CollectorInteraction(interaction::Event::Dropped(
+            parent_entry.clone(),
+        )));
+        assert_eq!(app.collection.len(), 1);
+        assert_eq!(app.collection[0].id, "parent");
+        for entry in [child_entry, parent_entry] {
+            let _ = app.update(Message::CollectorInteraction(interaction::Event::Dropped(
+                entry,
+            )));
+            assert_eq!(app.collection.len(), 1);
+            assert_eq!(app.collection[0].id, "parent");
+        }
+        let mut other = node("other", Some(25));
+        other.path = NativePath::new(std::path::Path::new("/tmp/fixture/other"));
+        let entry = app.drag_entry(&other).unwrap();
+        let selection = serde_json::to_value(&app.collection).unwrap();
+        let draft = app.draft_scan_id.clone();
+        app.review = Some(drag_review(app.collection.clone()));
+        app.confirm_text = "neutral input".into();
+        let plan = format!("{:?}", app.review);
+        assert!(app.drag_entry(&other).is_none());
+        let _ = app.update(Message::CollectorInteraction(interaction::Event::Dropped(
+            entry.clone(),
+        )));
+        assert_eq!(serde_json::to_value(&app.collection).unwrap(), selection);
+        assert_eq!(app.draft_scan_id, draft);
+        assert_eq!(format!("{:?}", app.review), plan);
+        assert_eq!(app.confirm_text, "neutral input");
+
+        app.review = None;
+        app.busy = true;
+        assert!(app.drag_entry(&other).is_none());
+        let _ = app.update(Message::CollectorInteraction(interaction::Event::Dropped(
+            entry,
+        )));
+        assert_eq!(serde_json::to_value(&app.collection).unwrap(), selection);
+        assert_eq!(app.draft_scan_id, draft);
+        assert!(app.review.is_none());
+        assert!(app.busy);
     }
     #[test]
     fn small_folder_defaults_to_its_attribution_and_toggle_preserves_each_scope() {

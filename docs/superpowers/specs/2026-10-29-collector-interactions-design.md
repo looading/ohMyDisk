@@ -67,3 +67,15 @@ divider bounds at 500x480, long banners through actual workspace size, remembere
 height after viewport shrink, collapsed/expanded transitions and item/resize
 exclusion. Run workspace tests/lint and fixture-only MCP, then native CI.
 Native acceptance uses owned temporary fixtures and does not execute cleanup.
+
+## Ordered input coordinates
+
+The pinned iced runtime reuses one final base cursor while processing an event
+batch. The workspace therefore advances pointer history from CursorMoved event
+positions; button events reuse the preceding position. Children receive this
+ordered cursor, then Scrollable applies its ordinary document transform. Sources
+use local transformed coordinates only for hit testing and window coordinates
+for threshold/drop logic. Window exit/unfocus marks the pointer unavailable and
+does not resurrect it from a future frame cursor. The chart follows the same
+recorded window pointer. This prevents both scrolled-click false drags and
+incorrect release endpoints under quickly batched input.

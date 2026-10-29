@@ -47,27 +47,27 @@ Send-compatible; Controller is never captured by a Task.
 Create only `crates/ohmydisk/src/gui/collector_interaction.rs` (focused child
 modules permitted). Do not edit mod/views/sunburst/Cargo.
 
-- [ ] Add geometry/session tests for release without hover, stale hover outside,
+- [x] Add geometry/session tests for release without hover, stale hover outside,
   first-move threshold, exact-once finish, cancellation and resize exclusion.
-- [ ] Implement scoped controller, source click/drag discrimination and one
+- [x] Implement scoped controller, source click/drag discrimination and one
   workspace release owner. Keep RefCell borrows out of child callouts.
-- [ ] Implement two-child workspace layout and separator with 64px collapsed,
+- [x] Implement two-child workspace layout and separator with 64px collapsed,
   180px default expanded, 8px separator and 240px content reserve.
-- [ ] Add panel preference/clamping/collapse restoration tests and render ghost,
+- [x] Add panel preference/clamping/collapse restoration tests and render ghost,
   target highlight and separator cursor without idle frame polling.
-- [ ] Report interface and freeze before Root's integrated cargo run.
+- [x] Report interface and freeze before Root's integrated cargo run.
 
 ## Task 2: Views — GUI agent
 
 Own `gui/views.rs` only. Root adds App fields/messages below.
 
-- [ ] Separate content and collector and compose the new workspace under the
+- [x] Separate content and collector and compose the new workspace under the
   existing header/modal wrapper. Pass actual bounds via the module's layout.
-- [ ] Replace row navigation Button with the source wrapper, keeping plus as a
+- [x] Replace row navigation Button with the source wrapper, keeping plus as a
   sibling and retaining click/navigation and hover preview behavior.
-- [ ] Render collector by actual allocated height: fixed summary/actions and
+- [x] Render collector by actual allocated height: fixed summary/actions and
   wrapped cards in vertical scroll. Resizing must reveal more rows, not blanks.
-- [ ] Add compact/short collector view tests and keep scope/plan guards intact.
+- [x] Add compact/short collector view tests and keep scope/plan guards intact.
 
 ## Task 3: App and chart integration — Root
 
@@ -80,19 +80,35 @@ collector_panel: collector_interaction::PanelState,
 // Message::CollectorInteraction(collector_interaction::Event)
 ```
 
-- [ ] Route panel toggles/resize and successful scoped drops. Refactor collect
+- [x] Route panel toggles/resize and successful scoped drops. Refactor collect
   into one node validator reused by plus and captured Entry; reject stale epochs.
-- [ ] Add controller cancellation at scope/navigation/modal transitions and
+- [x] Add controller cancellation at scope/navigation/modal transitions and
   preserve drafts, immutable plans and cleanup authorization.
-- [ ] Arm controller from real chart nodes; stop duplicate canvas drop handling,
+- [x] Arm controller from real chart nodes; stop duplicate canvas drop handling,
   preserve synthetic/center click behavior and cached geometry, remove old ghost.
-- [ ] Test parent/child rules, stale scope and complete unmeasured nodes.
+- [x] Test parent/child rules, stale scope and complete unmeasured nodes.
 
 ## Task 4: Review, checks and native evidence — Root/team
 
-- [ ] Run formatting, workspace Rust tests, Clippy, Python checks and release MCP.
-- [ ] Review event capture/order, bounds, controller lifetime and plan invariants.
+- [x] Run formatting, workspace Rust tests, Clippy, Python checks and release MCP.
+- [x] Review event capture/order, bounds, controller lifetime and plan invariants.
 - [ ] Publish owned GUI commits to the existing PR, preserving concurrent scan
   work. Run native Windows/macOS CI and verify packages.
 - [ ] Native fixture checks: chart/list drag in/out, cancel, divider growth/shrink,
   collapse restoration and 500x480. Record tool limitations without false passes.
+
+## Verification record
+
+The integrated ordered-pointer code passed 171 Rust tests, 11 Python tests,
+formatting, Clippy (with warnings), and release MCP fixture workflows. Before
+the ordered-pointer correction, local native input positively demonstrated a
+pre-hovered list-row drop (0 to 1 without navigation); chart and divider were
+not accepted as passes. The corrected version still needs native acceptance
+after the Mac unlocks.
+
+Independent review found and fixed Scrollable's document/window coordinate
+mixture. A further confirmed runtime contract was handled: iced updates a batch
+of events with one final base cursor. Workspace now records input positions in
+event order and dispatches the ordered cursor to children before Scrollable
+translation. Five regression tests cover stale release cursor, same-batch source
+hit, resize release, unavailable pointer and first fallback/levitation.

@@ -1,6 +1,6 @@
 //! Bounded occupancy-only sunburst and typed, non-destructive synthetic sectors.
 use super::{
-    Message,
+    Message, interaction,
     space_view::{Capacity, node_bytes},
 };
 use iced::widget::canvas::{self, Action, Frame, Geometry, Path};
@@ -254,7 +254,9 @@ pub struct Sunburst<'a> {
     pub hover: Option<Target>,
     pub collected: Vec<String>,
     pub can_go_up: bool,
-    pub drag_label: Option<&'a str>,
+    pub controller: interaction::Controller,
+    pub scope: Option<interaction::Scope>,
+    pub resolve_drag: Box<dyn Fn(&str) -> Option<interaction::Entry> + 'a>,
 }
 impl Sunburst<'_> {
     fn draw_base(&self, frame: &mut Frame, metrics: Metrics, center_hover: bool) {
@@ -390,6 +392,20 @@ pub struct PointerState {
     center_pressed: bool,
     origin: Option<Point>,
     dragging: bool,
+    generation: u64,
+    scope: Option<interaction::Scope>,
+}
+impl PointerState {
+    fn synchronize(&mut self, generation: u64, scope: &Option<interaction::Scope>) {
+        if self.generation != generation || &self.scope != scope {
+            self.pressed = None;
+            self.center_pressed = false;
+            self.origin = None;
+            self.dragging = false;
+            self.generation = generation;
+            self.scope = scope.clone();
+        }
+    }
 }
 impl canvas::Program<Message> for Sunburst<'_> {
     type State = PointerState;
@@ -400,13 +416,28 @@ impl canvas::Program<Message> for Sunburst<'_> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<Action<Message>> {
-        let position = cursor.position_in(bounds);
+        state.synchronize(self.controller.generation(), &self.scope);
+        // Workspace records pointer positions in event order. The cursor
+        // argument may already reflect a later event from this UI batch.
+        // This chart is not inside a Scrollable, so its layout bounds are also
+        // in window coordinates.
+        let window_position = self.controller.window_pointer().or(cursor.position());
+        let position = window_position
+            .filter(|point| bounds.contains(*point))
+            .map(|point| Point::new(point.x - bounds.x, point.y - bounds.y));
         let metrics = Metrics::new(bounds.width, bounds.height);
         let hit = position.and_then(|point| hit_test(self.segments, metrics, point));
         match event {
-            iced::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
-                if let (Some(origin), Some(point)) = (state.origin, position) {
-                    state.dragging |= origin.distance(point) > 6.0;
+            iced::Event::Mouse(mouse::Event::CursorMoved { position: point }) => {
+                if let Some(origin) = state.origin {
+                    state.dragging |= origin.distance(*point) >= 6.0;
+                }
+                if self.controller.is_dragging() {
+                    state.dragging = true;
+                    if state.hover.take().is_some() {
+                        return Some(Action::publish(Message::ChartHover(None)));
+                    }
+                    return Some(Action::request_redraw());
                 }
                 if hit != state.hover {
                     state.hover = hit;
@@ -427,22 +458,32 @@ impl canvas::Program<Message> for Sunburst<'_> {
                 if hit.is_some() =>
             {
                 state.pressed = hit;
-                state.origin = position;
+                state.origin = window_position;
                 state.dragging = false;
-                let id = hit.and_then(|i| self.segments[i].target.node_id().map(str::to_owned));
-                Some(Action::publish(Message::DragStarted(id)).and_capture())
+                if let Some(id) = hit.and_then(|i| self.segments[i].target.node_id())
+                    && let Some(entry) = (self.resolve_drag)(id)
+                    && let Some(point) = window_position
+                {
+                    self.controller.arm(entry, point);
+                }
+                state.generation = self.controller.generation();
+                Some(Action::request_redraw().and_capture())
             }
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
                 if self.can_go_up && position.is_some_and(|point| metrics.in_center(point)) =>
             {
                 state.center_pressed = true;
+                state.origin = window_position;
+                state.dragging = false;
+                state.generation = self.controller.generation();
                 Some(Action::request_redraw().and_capture())
             }
             iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
                 if state.center_pressed =>
             {
                 state.center_pressed = false;
-                if position.is_some_and(|point| metrics.in_center(point)) {
+                state.origin = None;
+                if !state.dragging && position.is_some_and(|point| metrics.in_center(point)) {
                     Some(Action::publish(Message::Up).and_capture())
                 } else {
                     Some(Action::request_redraw())
@@ -453,19 +494,20 @@ impl canvas::Program<Message> for Sunburst<'_> {
             {
                 let pressed = state.pressed.take();
                 state.origin = None;
-                let segment = if !state.dragging && pressed == hit {
+                let dragging = state.dragging || self.controller.is_dragging();
+                let segment = if !dragging && pressed == hit {
                     hit.map(|i| self.segments[i].clone())
                 } else {
                     None
                 };
                 state.dragging = false;
-                Some(
-                    Action::publish(Message::ChartReleased {
-                        segment,
-                        outside: !cursor.is_over(bounds),
-                    })
-                    .and_capture(),
-                )
+                if self.controller.is_dragging() {
+                    // The workspace owns release hit testing and submits the
+                    // only drop, after the canvas has cleared its press state.
+                    return Some(Action::request_redraw().and_capture());
+                }
+                self.controller.cancel_candidate();
+                Some(Action::publish(Message::ChartReleased { segment }).and_capture())
             }
             _ => None,
         }
@@ -508,28 +550,9 @@ impl canvas::Program<Message> for Sunburst<'_> {
         let base = state.geometry.draw(renderer, bounds.size(), |frame| {
             self.draw_base(frame, metrics, center_hover);
         });
-        let mut layers = vec![base];
-        if state.dragging {
-            if let (Some(label), Some(point)) = (self.drag_label, cursor.position_in(bounds)) {
-                let mut frame = Frame::new(renderer, bounds.size());
-                frame.fill_rectangle(
-                    Point::new(point.x + 12.0, point.y + 10.0),
-                    iced::Size::new(210.0, 32.0),
-                    Color::from_rgba(0.10, 0.13, 0.20, 0.96),
-                );
-                frame.fill_text(canvas::Text {
-                    content: super::crop(label, 24),
-                    position: Point::new(point.x + 22.0, point.y + 17.0),
-                    color: Color::WHITE,
-                    size: 12.0.into(),
-                    font: super::chinese_font(),
-                    ..canvas::Text::default()
-                });
-                layers.push(frame.into_geometry());
-            }
-        }
-        // No empty/live overlay is submitted on idle or text-input blink frames.
-        layers
+        // The workspace draws the drag ghost beyond canvas bounds. Idle frames
+        // still reuse only the cached geometry, with no empty live overlay.
+        vec![base]
     }
     fn mouse_interaction(
         &self,
@@ -698,5 +721,63 @@ mod tests {
         let mut unknown = node("unknown", "root", 900, false);
         unknown.space_usage = None;
         assert!(layout("root", 0, &[unknown]).is_empty());
+    }
+    #[test]
+    fn canceled_generation_or_changed_scope_cannot_reuse_a_pressed_sector() {
+        let scope = Some(interaction::Scope {
+            scan_id: "first".into(),
+            epoch: 3,
+        });
+        let mut pointer = PointerState::default();
+        pointer.synchronize(4, &scope);
+        pointer.pressed = Some(0);
+        pointer.origin = Some(Point::new(10.0, 10.0));
+        pointer.dragging = true;
+        pointer.synchronize(5, &scope);
+        assert!(pointer.pressed.is_none());
+        assert!(pointer.origin.is_none());
+        assert!(!pointer.dragging);
+        pointer.pressed = Some(0);
+        pointer.center_pressed = true;
+        pointer.synchronize(
+            5,
+            &Some(interaction::Scope {
+                scan_id: "second".into(),
+                epoch: 3,
+            }),
+        );
+        assert!(pointer.pressed.is_none());
+        assert!(!pointer.center_pressed);
+    }
+    #[test]
+    fn first_move_outside_the_canvas_still_crosses_the_drag_threshold() {
+        let controller = interaction::Controller::default();
+        let scope = Some(interaction::Scope {
+            scan_id: "scan".into(),
+            epoch: 1,
+        });
+        let segments = overview_layout(100, 25);
+        let chart = Sunburst {
+            segments: &segments,
+            hover: None,
+            collected: vec![],
+            can_go_up: false,
+            controller,
+            scope: scope.clone(),
+            resolve_drag: Box::new(|_| None),
+        };
+        let mut pointer = PointerState::default();
+        pointer.synchronize(chart.controller.generation(), &scope);
+        pointer.pressed = Some(0);
+        pointer.origin = Some(Point::new(30.0, 30.0));
+        let outside = Point::new(300.0, 300.0);
+        let _ = canvas::Program::update(
+            &chart,
+            &mut pointer,
+            &iced::Event::Mouse(mouse::Event::CursorMoved { position: outside }),
+            Rectangle::new(Point::ORIGIN, iced::Size::new(100.0, 100.0)),
+            mouse::Cursor::Available(outside),
+        );
+        assert!(pointer.dragging);
     }
 }

@@ -1,9 +1,12 @@
 //! Native desktop frontend. Filesystem work belongs to the shared local service;
 //! the UI only owns navigation, an uncommitted collection, and explicit approval.
+mod collector_interaction;
 mod space_view;
 mod sunburst;
 mod views;
 mod window_chrome;
+
+use collector_interaction as interaction;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -193,6 +196,7 @@ struct ReviewPlan {
 #[derive(Clone)]
 enum Message {
     WindowChrome(window_chrome::Message),
+    CollectorInteraction(interaction::Event),
     ToggleCompactPreview,
     Connected(Result<Client, String>),
     Response(Response, Result<Value, String>),
@@ -201,13 +205,8 @@ enum Message {
     ToggleCollector,
     ShowSpaceInfo(sunburst::Target),
     ChartHover(Option<sunburst::Target>),
-    PreviewReady {
-        epoch: u64,
-        owner: String,
-    },
-    ClearPreview {
-        epoch: u64,
-    },
+    PreviewReady { epoch: u64, owner: String },
+    ClearPreview { epoch: u64 },
     PreviewPane(bool),
     PickFolder,
     FolderPicked(Option<PathBuf>),
@@ -220,29 +219,19 @@ enum Message {
     Rescan,
     MoreChildren,
     Hover(Option<String>),
-    DragStarted(Option<String>),
-    ChartReleased {
-        segment: Option<sunburst::Segment>,
-        outside: bool,
-    },
-    CollectorHover(bool),
+    ChartReleased { segment: Option<sunburst::Segment> },
     Collect(String),
     Remove(String),
     ClearCollection,
     Prepare(CleanupMode),
     DismissReview,
-    ReviewExpired {
-        plan_id: String,
-    },
+    ReviewExpired { plan_id: String },
     ConfirmText(String),
     Execute,
     MorePlan,
     MoreResults,
     DismissResults,
-    RevealInScan {
-        scan_id: String,
-        node_id: String,
-    },
+    RevealInScan { scan_id: String, node_id: String },
     CancelJob,
     Tick,
     ClearBanner,
@@ -258,12 +247,13 @@ impl std::fmt::Debug for Message {
 struct App {
     chrome: window_chrome::State,
     compact_preview: bool,
+    collector_interaction: interaction::Controller,
+    collector_panel: interaction::PanelState,
     client: Option<Client>,
     data_dir: PathBuf,
     connecting: bool,
     overview: bool,
     root_mode: RootMode,
-    collector_expanded: bool,
     chart_target: Option<sunburst::Target>,
     space_info: Option<sunburst::Target>,
     preview_owner: Option<String>,
@@ -286,8 +276,6 @@ struct App {
     loading: bool,
     epoch: u64,
     hover: Option<String>,
-    drag: Option<String>,
-    collector_hover: bool,
     collection: Vec<Node>,
     draft_scan_id: Option<String>,
     active: Option<ActiveJob>,
@@ -312,12 +300,13 @@ impl App {
             Self {
                 chrome: window_chrome::State::default(),
                 compact_preview: false,
+                collector_interaction: interaction::Controller::default(),
+                collector_panel: interaction::PanelState::default(),
                 client: None,
                 data_dir,
                 connecting: true,
                 overview: true,
                 root_mode: RootMode::Directory,
-                collector_expanded: false,
                 chart_target: None,
                 space_info: None,
                 preview_owner: None,
@@ -340,8 +329,6 @@ impl App {
                 loading: false,
                 epoch: 0,
                 hover: None,
-                drag: None,
-                collector_hover: false,
                 collection: Vec::new(),
                 draft_scan_id: None,
                 active: None,
@@ -431,8 +418,39 @@ impl App {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        if matches!(
+            &message,
+            Message::Overview
+                | Message::SetRootMode(_)
+                | Message::ToggleCompactPreview
+                | Message::ToggleCollector
+                | Message::PickFolder
+                | Message::OpenScan(_)
+                | Message::Navigate(_)
+                | Message::Back
+                | Message::Forward
+                | Message::Up
+                | Message::Rescan
+                | Message::Prepare(_)
+                | Message::DismissReview
+                | Message::DismissResults
+        ) {
+            self.collector_interaction.cancel();
+        }
         match message {
             Message::WindowChrome(message) => {
+                if matches!(
+                    &message,
+                    window_chrome::Message::WindowEvent(
+                        _,
+                        iced::window::Event::Unfocused
+                            | iced::window::Event::Closed
+                            | iced::window::Event::Resized(_)
+                            | iced::window::Event::Rescaled(_)
+                    )
+                ) {
+                    self.collector_interaction.cancel();
+                }
                 let task = self.chrome.update(message).map(Message::WindowChrome);
                 if !self.compact_layout() && self.compact_preview {
                     self.compact_preview = false;
@@ -440,6 +458,17 @@ impl App {
                 }
                 return task;
             }
+            Message::CollectorInteraction(event) => match event {
+                interaction::Event::HeightChanged(height) => self.collector_panel.resize(height),
+                interaction::Event::Dropped(entry) => {
+                    if self.interaction_scope().as_ref() == Some(&entry.scope)
+                        && self.collection_interaction_enabled()
+                        && self.collect_node(&entry.scope.scan_id, entry.node)
+                    {
+                        self.collector_panel.open();
+                    }
+                }
+            },
             Message::ToggleCompactPreview => {
                 if !self.compact_layout() {
                     return Task::none();
@@ -466,7 +495,7 @@ impl App {
                     self.rebuild_chart();
                 }
             }
-            Message::ToggleCollector => self.collector_expanded = !self.collector_expanded,
+            Message::ToggleCollector => self.collector_panel.toggle(),
             Message::ShowSpaceInfo(target) => {
                 self.space_info = if self.space_info.as_ref() == Some(&target) {
                     None
@@ -616,15 +645,8 @@ impl App {
                 }
             }
             Message::Hover(id) => self.hover = id,
-            Message::DragStarted(id) => self.drag = id,
-            Message::CollectorHover(hover) => self.collector_hover = hover,
-            Message::ChartReleased { segment, outside } => {
-                if outside && self.collector_hover {
-                    if let Some(id) = self.drag.take() {
-                        self.collect(&id);
-                    }
-                } else if let Some(segment) = segment {
-                    self.drag = None;
+            Message::ChartReleased { segment } => {
+                if let Some(segment) = segment {
                     match segment.target {
                         sunburst::Target::Node(id) => return self.navigate(&id, true),
                         sunburst::Target::Aggregate { owner_id } => {
@@ -643,8 +665,6 @@ impl App {
                         }
                         target => self.space_info = Some(target),
                     }
-                } else {
-                    self.drag = None;
                 }
             }
             Message::Collect(id) => self.collect(&id),
@@ -1123,6 +1143,7 @@ impl App {
     }
 
     fn open_scan(&mut self, id: String) -> Task<Message> {
+        self.collector_interaction.cancel();
         self.epoch += 1;
         self.loading = true;
         self.overview = false;
@@ -1183,6 +1204,7 @@ impl App {
         self.show_location(location)
     }
     fn show_location(&mut self, location: Location) -> Task<Message> {
+        self.collector_interaction.cancel();
         let Some(scan) = &self.scan else {
             return Task::none();
         };
@@ -1276,7 +1298,57 @@ impl App {
             Vec::new()
         };
     }
+    pub(super) fn interaction_scope(&self) -> Option<interaction::Scope> {
+        if self.overview {
+            return None;
+        }
+        self.scan.as_ref().map(|scan| interaction::Scope {
+            scan_id: scan.scan_id.clone(),
+            epoch: self.epoch,
+        })
+    }
+
+    pub(super) fn collection_interaction_enabled(&self) -> bool {
+        !self.overview
+            && self.capacity().is_some()
+            && self.review.is_none()
+            && self.result.is_none()
+            && !self.busy
+            && !self
+                .active
+                .as_ref()
+                .is_some_and(|job| matches!(job.work, Work::Cleanup))
+    }
+
+    pub(super) fn drag_entry(&self, node: &Node) -> Option<interaction::Entry> {
+        if !self.collection_interaction_enabled()
+            || !node.complete
+            || self
+                .scan
+                .as_ref()
+                .is_some_and(|scan| scan.root_id.as_deref() == Some(node.id.as_str()))
+        {
+            return None;
+        }
+        Some(interaction::Entry {
+            scope: self.interaction_scope()?,
+            node: node.clone(),
+        })
+    }
+
     fn collect(&mut self, id: &str) {
+        let Some(scan_id) = self.scan.as_ref().map(|scan| scan.scan_id.clone()) else {
+            return;
+        };
+        let Some(node) = self.find_node(id).cloned() else {
+            return;
+        };
+        self.collect_node(&scan_id, node);
+    }
+
+    /// A plus click and a captured drag use the same collection rules. The node
+    /// is from an immutable snapshot; drag scope is checked before entering.
+    fn collect_node(&mut self, scan_id: &str, node: Node) -> bool {
         if self
             .active
             .as_ref()
@@ -1284,11 +1356,14 @@ impl App {
             || self.busy
         {
             self.banner = Some("清理作业进行中，请等待逐项结果后再修改收集区。".into());
-            return;
+            return false;
         }
         let Some(scan) = &self.scan else {
-            return;
+            return false;
         };
+        if scan.scan_id != scan_id || self.review.is_some() || self.result.is_some() {
+            return false;
+        }
         if self
             .draft_scan_id
             .as_ref()
@@ -1296,33 +1371,31 @@ impl App {
         {
             self.banner =
                 Some("收集区来自另一份扫描。请先处理或清空，再加入当前扫描的项目。".into());
-            return;
+            return false;
         }
-        let Some(node) = self.find_node(id).cloned() else {
-            return;
-        };
         if Some(node.id.as_str()) == scan.root_id.as_deref() {
             self.banner = Some("扫描根不能作为清理目标，请选择里面的文件或文件夹。".into());
-            return;
+            return false;
         }
         if !node.complete {
             self.banner = Some("该项目的扫描不完整，请先处理访问问题并重新扫描。".into());
-            return;
+            return false;
         }
         if self
             .collection
             .iter()
             .any(|entry| node_covers(entry, &node))
         {
-            return;
+            return true;
         }
         self.collection.retain(|entry| !node_covers(&node, entry));
         if self.collection.len() >= 500 {
             self.banner = Some("单个清理计划最多选择 500 个目标；可选择其父目录。".into());
-            return;
+            return false;
         }
         self.draft_scan_id = Some(scan.scan_id.clone());
         self.collection.push(node);
+        true
     }
 
     fn review_view<'a>(&'a self, plan: &'a ReviewPlan) -> Element<'a, Message> {
