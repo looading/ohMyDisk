@@ -1,4 +1,6 @@
 //! Platform window controls and native drag/resize gestures, separate from jobs.
+#[cfg(target_os = "macos")]
+mod macos_drag;
 #[cfg(not(target_os = "windows"))]
 use iced::widget::Space;
 #[cfg(target_os = "windows")]
@@ -17,6 +19,8 @@ use iced::{
 use std::time::{Duration, Instant};
 
 pub(super) const MACOS_TRAFFIC_LIGHT_WIDTH: f32 = 78.0;
+pub(super) const PICK_FOLDER_BUTTON_WIDTH: f32 = 120.0;
+pub(super) const HEADER_HEIGHT: f32 = 48.0;
 const INITIAL_SIZE: Size = Size::new(1370.0, 900.0);
 const MINIMUM_SIZE: Size = Size::new(500.0, 480.0);
 const RESIZE_EDGE: f32 = 6.0;
@@ -115,11 +119,20 @@ impl State {
         };
         self.query_epoch = self.query_epoch.wrapping_add(1);
         let epoch = self.query_epoch;
-        window::is_maximized(id).map(move |maximized| Message::Maximized {
+        let query = window::is_maximized(id).map(move |maximized| Message::Maximized {
             id,
             epoch,
             maximized,
-        })
+        });
+        #[cfg(target_os = "macos")]
+        {
+            // Installation runs in iced's event-loop callback, never from a
+            // worker. Repeated focus/resize events update the same native view.
+            let native_drag = window::run(id, macos_drag::install).discard();
+            Task::batch([native_drag, query])
+        }
+        #[cfg(not(target_os = "macos"))]
+        query
     }
 
     fn forget_window(&mut self) {
@@ -390,6 +403,14 @@ pub(super) fn drag_area<'a, M: Clone + 'a>(
     content: Element<'a, M>,
     on_action: impl Fn(Action) -> M + 'a,
 ) -> Element<'a, M> {
+    #[cfg(target_os = "macos")]
+    {
+        // An AppKit subview receives the original mouseDown synchronously,
+        // avoiding dependence on NSApp.currentEvent from a deferred iced task.
+        let _ = on_action;
+        content
+    }
+    #[cfg(not(target_os = "macos"))]
     Element::new(ChromeArea {
         content,
         on_action: Box::new(on_action),
@@ -415,8 +436,12 @@ pub(super) fn frame<'a, M: Clone + 'a>(
 
 #[derive(Clone, Copy)]
 enum AreaKind {
+    // macOS receives these gestures through the native AppKit subview instead.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     Drag,
-    Resize { maximized: bool },
+    Resize {
+        maximized: bool,
+    },
 }
 struct ChromeArea<'a, M> {
     content: Element<'a, M>,

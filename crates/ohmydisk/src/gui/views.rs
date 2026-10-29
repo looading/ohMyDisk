@@ -2,7 +2,7 @@
 use super::*;
 use iced::widget::column;
 
-const HEADER_HEIGHT: f32 = 48.0;
+const HEADER_HEIGHT: f32 = window_chrome::HEADER_HEIGHT;
 const COMPACT_WIDTH: f32 = 1000.0;
 const MODAL_MARGIN: f32 = 12.0;
 
@@ -433,6 +433,7 @@ impl App {
             })
             .size(12),
         )
+        .width(window_chrome::PICK_FOLDER_BUTTON_WIDTH)
         .padding([8, 11])
         .style(accent_button)
         .on_press_maybe(

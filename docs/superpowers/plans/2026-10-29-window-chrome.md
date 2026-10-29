@@ -12,7 +12,8 @@ caption gestures into iced tasks. The App owns that state and maps messages.
 Adaptive views and overlays consume the current logical window size.
 
 **Tech Stack:** Existing Rust 2024, iced 0.14.0, iced_winit 0.14.1 and winit
-0.30.13; no new windowing dependency or native subclass.
+0.30.13; the Mac drag correction uses already-locked objc2/AppKit wrappers
+for a local mouse-down view, without replacing the runner.
 
 ## Global constraints
 
@@ -112,3 +113,15 @@ blocking window/widget or modal authorization defects.
 A separate user-authorized scan-reliability task is editing core/service files
 in the shared checkout. This task commits only the GUI, its README changes and
 this plan; clean-checkout verification keeps those backend edits separate.
+
+## Mac drag correction
+
+Native acceptance recorded all non-drag checks, but fixed-window coordinates
+stayed unchanged after the iced-task drag. `window_chrome/macos_drag.rs` therefore
+installs a local transparent MainThreadOnly NSView that uses the original mouse
+event. It shares header/picker geometry constants with views.rs, avoids controls
+and content, uses parent ownership, and has no global swizzle or periodic task.
+Unsafe boundaries document ABI, main-thread access and retained lifetimes.
+Bounds/flipped/invalid-viewport tests supplement the existing gesture tests.
+The native correction must pass actual before/after window bounds, followed by
+full tests, lint, MCP and native CI.

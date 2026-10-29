@@ -71,3 +71,26 @@ Two alternatives were considered: drawing caption controls on both platforms,
 which loses reliable Mac native resizing, and adding iced-window-chrome 0.1.0,
 which patches after creation and still leaves resize handles to application code.
 The selected approach uses the already-pinned ecosystem APIs.
+
+## Native Mac drag correction found during acceptance
+
+The first implementation's iced drag task was accepted but did not move the
+fixed main window in a measured drag. Other native resizing and zoom tests
+worked. The exact event-loss cause is not claimed; winit's deferred Mac drag
+path reads `NSApplication.currentEvent`, rather than retaining the original
+mouse-down event.
+
+A small MainThreadOnly NSView now covers only the noninteractive header band.
+It calls AppKit drag immediately from its original `mouseDown:` callback, and
+uses native zoom for a double click. It reserves 78 logical pixels for the
+native controls and 128 for the fixed 120-pixel picker plus spacing; header
+height is shared at 48. Parent ownership releases the child at window close,
+with no global swizzling or retained window cycle. Geometry updates are tied
+to existing window events. The direct objc2/AppKit/Foundation/raw-handle
+references reuse versions already in the lockfile; no runner or windowing
+framework is replaced.
+
+This replaces the plan's initial no-subclass implementation choice after a
+measured failure, while preserving the user-approved window interactions.
+The correction still requires an actual position-change check before a native
+drag pass can be recorded.
