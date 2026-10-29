@@ -177,10 +177,15 @@ separately. Timing comparisons are reported only after semantic checks pass.
 
 ## Verification record (2026-10-29)
 
-Local frozen source: 131 Rust tests and 11 Python tests passed; formatting and
+Local frozen source: 132 Rust tests and 11 Python tests passed; formatting and
 Clippy passed with existing lint warnings. Final release MCP smoke passed both
 auto and supervised modes, including fixture-only native trash/permanent
 cleanup, metric cursors and persisted occupancy reconciliation. The attributed
 service/history smoke also passed. Worker experiments and their regressions are
 recorded in `benchmarks/PERFORMANCE-0.2.0.md`. Remaining GUI and native CI checks
 above are intentionally incomplete until observed.
+
+A final GUI regression fix binds a one-shot expiry wakeup to each plan ID and
+rejects expired Execute events locally while retaining the service guard. Its
+red/green test preserves the selection and ignores stale plan timers. Packaging
+also carries the README screenshot into each distribution.

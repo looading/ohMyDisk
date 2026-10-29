@@ -125,7 +125,7 @@ contains the full evidence.
 
 ## End-to-end service and historical queries
 
-The final 0.2.0 release executable was paired against frozen v0.1.2 on 100,000
+The measured 0.2.0 candidate release executable was paired against frozen v0.1.2 on 100,000
 generated small files in 100 child directories. Each role had one excluded
 warmup and five alternating measured trials, with fresh state and two historical
 service restarts per trial. Independent before/after inventory validation passed.

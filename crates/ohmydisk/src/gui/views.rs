@@ -1450,6 +1450,43 @@ mod tests {
         assert!(app.banner.as_ref().unwrap().contains("不完整"));
     }
     #[test]
+    fn expired_review_blocks_execution_without_discarding_the_draft() {
+        let mut app = measured_app("/tmp/fixture", "complete");
+        let selected = node("selected", Some(100));
+        app.collection = vec![selected.clone()];
+        app.draft_scan_id = Some("measured".into());
+        app.review = Some(ReviewPlan {
+            id: "current-plan".into(),
+            hash: "hash".into(),
+            mode: CleanupMode::Permanent,
+            bytes: 100,
+            expires_at: ohmydisk_core::now_ms() + 60_000,
+            targets: vec![selected],
+            manifest: vec![],
+            next_cursor: None,
+        });
+        app.confirm_text = "永久删除".into();
+        app.banner = Some("current plan ready".into());
+        let _ = app.update(Message::ReviewExpired {
+            plan_id: "old-plan".into(),
+        });
+        assert_eq!(app.banner.as_deref(), Some("current plan ready"));
+        assert_eq!(app.confirm_text, "永久删除");
+        assert_eq!(app.review.as_ref().unwrap().id, "current-plan");
+        app.review.as_mut().unwrap().expires_at = ohmydisk_core::now_ms().saturating_sub(1);
+        let _ = app.update(Message::ReviewExpired {
+            plan_id: "current-plan".into(),
+        });
+        assert!(app.banner.as_ref().unwrap().contains("过期"));
+        assert!(app.confirm_text.is_empty());
+        app.confirm_text = "永久删除".into();
+        let _ = app.update(Message::Execute);
+        assert!(!app.busy);
+        assert!(app.confirm_text.is_empty());
+        assert_eq!(app.collection.len(), 1);
+        assert_eq!(app.draft_scan_id.as_deref(), Some("measured"));
+    }
+    #[test]
     fn selection_styles_do_not_cross_scan_ids_or_reused_paths() {
         let mut app = measured_app("/tmp/fixture", "complete");
         let retained = node("reused-id", Some(100));

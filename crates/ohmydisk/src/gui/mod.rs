@@ -232,6 +232,9 @@ enum Message {
     ClearCollection,
     Prepare(CleanupMode),
     DismissReview,
+    ReviewExpired {
+        plan_id: String,
+    },
     ConfirmText(String),
     Execute,
     MorePlan,
@@ -364,6 +367,30 @@ impl App {
             },
             Message::Connected,
         )
+    }
+    fn review_expiry_task(plan_id: String, expires_at: u64) -> Task<Message> {
+        // This is a plan-bound one-shot, not an application-wide redraw timer.
+        let delay = expires_at
+            .saturating_sub(ohmydisk_core::now_ms())
+            .saturating_add(1);
+        Task::perform(
+            async move {
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+                plan_id
+            },
+            |plan_id| Message::ReviewExpired { plan_id },
+        )
+    }
+    fn mark_review_expired(&mut self) {
+        self.confirm_text.clear();
+        self.banner = Some(
+            if self.busy {
+                "清理计划已过期；已提交的操作请以后台结果为准。"
+            } else {
+                "清理计划已过期，请返回检查并重新准备计划。"
+            }
+            .into(),
+        );
     }
     fn request(&self, operation: &'static str, args: Value, response: Response) -> Task<Message> {
         let Some(client) = self.client.clone() else {
@@ -620,8 +647,26 @@ impl App {
                     self.confirm_text.clear();
                 }
             }
+            Message::ReviewExpired { plan_id } => {
+                if let Some(plan) = self.review.as_ref().filter(|plan| plan.id == plan_id) {
+                    if ohmydisk_core::now_ms() > plan.expires_at {
+                        self.mark_review_expired();
+                    } else {
+                        // A backwards wall-clock adjustment must not lose the deadline wakeup.
+                        return Self::review_expiry_task(plan_id, plan.expires_at);
+                    }
+                }
+            }
             Message::ConfirmText(value) => self.confirm_text = value,
             Message::Execute => {
+                if self
+                    .review
+                    .as_ref()
+                    .is_some_and(|plan| ohmydisk_core::now_ms() > plan.expires_at)
+                {
+                    self.mark_review_expired();
+                    return Task::none();
+                }
                 if let Some(plan) = &self.review {
                     if !self.busy
                         && (plan.mode == CleanupMode::Trash || self.confirm_text == "永久删除")
@@ -963,7 +1008,7 @@ impl App {
                     string(&value, "id").or_else(|| string(&value, "plan_id")),
                     string(&value, "hash").or_else(|| string(&value, "plan_hash")),
                 ) {
-                    self.review = Some(ReviewPlan {
+                    let plan = ReviewPlan {
                         id,
                         hash,
                         mode: serde_json::from_value(
@@ -975,7 +1020,10 @@ impl App {
                         targets,
                         manifest,
                         next_cursor: string(&value, "next_cursor"),
-                    });
+                    };
+                    let expiry = Self::review_expiry_task(plan.id.clone(), plan.expires_at);
+                    self.review = Some(plan);
+                    return expiry;
                 } else {
                     self.banner = Some("服务返回的计划缺少标识或校验值，未开放执行。".into());
                 }
