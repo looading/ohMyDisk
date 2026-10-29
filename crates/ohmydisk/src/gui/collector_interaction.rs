@@ -1133,7 +1133,9 @@ impl<M: Clone> Widget<M, Theme, iced::Renderer> for Source<'_, M> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::{Message as AppMessage, sunburst};
     use super::*;
+    use iced::widget::{Space, canvas, column, scrollable};
     use ohmydisk_core::{NativePath, NodeKind};
     use std::path::Path;
 
@@ -1181,6 +1183,234 @@ mod tests {
     }
     fn mouse_released() -> UiEvent {
         UiEvent::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+    }
+
+    /// The production renderer is tiny-skia. Its constructor only allocates CPU
+    /// layers/caches, and this harness never creates a compositor or a window.
+    fn widget_events(
+        mut widget: Element<'_, AppMessage>,
+        size: Size,
+        events: &[UiEvent],
+        stale_frame_cursor: mouse::Cursor,
+        capture_release: bool,
+    ) -> Vec<AppMessage> {
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, 16.0.into());
+        let mut tree = Tree::new(widget.as_widget());
+        let node = widget.as_widget_mut().layout(
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(Size::ZERO, size),
+        );
+        let viewport = Rectangle::with_size(size);
+        let mut clipboard = iced::advanced::clipboard::Null;
+        let mut messages = Vec::new();
+        for event in events {
+            let mut shell = Shell::new(&mut messages);
+            if capture_release && released(event) {
+                shell.capture_event();
+            }
+            widget.as_widget_mut().update(
+                &mut tree,
+                event,
+                Layout::new(&node),
+                stale_frame_cursor,
+                &renderer,
+                &mut clipboard,
+                &mut shell,
+                &viewport,
+            );
+        }
+        messages
+    }
+    fn space() -> Element<'static, AppMessage> {
+        Space::new().width(Length::Fill).height(Length::Fill).into()
+    }
+    fn chart<'a>(
+        segments: &'a [sunburst::Segment],
+        item: Entry,
+        controller: Controller,
+    ) -> Element<'a, AppMessage> {
+        canvas(sunburst::Sunburst {
+            segments,
+            hover: None,
+            collected: Vec::new(),
+            can_go_up: false,
+            controller,
+            scope: Some(item.scope.clone()),
+            resolve_drag: Box::new(move |id| (id == item.node.id).then(|| item.clone())),
+        })
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+    }
+    fn assert_single_drop_without_navigation(messages: &[AppMessage], id: &str) {
+        let drops = messages
+            .iter()
+            .filter_map(|message| {
+                if let AppMessage::CollectorInteraction(Event::Dropped(item)) = message {
+                    Some(item)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(drops.len(), 1, "the workspace submits exactly one drop");
+        assert_eq!(drops[0].node.id, id);
+        assert_eq!(drops[0].scope, scope(1));
+        assert!(!messages.iter().any(|message| matches!(
+            message,
+            AppMessage::ChartReleased { .. } | AppMessage::Navigate(_) | AppMessage::Up
+        )));
+    }
+
+    #[test]
+    fn widget_chart_drag_submits_one_drop_without_navigation_with_stale_batch_cursor() {
+        let size = Size::new(500.0, 480.0);
+        let panel = PanelState::default();
+        let geometry = Geometry::new(Rectangle::with_size(size), panel);
+        let segments = [sunburst::Segment {
+            target: sunburst::Target::Node("node".into()),
+            depth: 0,
+            start: 0.0,
+            end: std::f32::consts::TAU,
+            bytes: 100,
+            color_index: 0,
+        }];
+        let metrics = sunburst::Metrics::new(geometry.content.width, geometry.content.height);
+        let origin = Point::new(
+            metrics.center.x + metrics.hole + metrics.ring / 2.0,
+            metrics.center.y,
+        );
+        assert_eq!(sunburst::hit_test(&segments, metrics, origin), Some(0));
+        let endpoint = geometry.collector.center();
+        let events = [moved(origin), pressed(), moved(endpoint), mouse_released()];
+        for capture_release in [false, true] {
+            let controller = Controller::default();
+            let widget = workspace(
+                chart(&segments, entry(1, "node"), controller.clone()),
+                space(),
+                controller.clone(),
+                panel,
+                Some(scope(1)),
+                true,
+                true,
+                AppMessage::CollectorInteraction,
+            );
+            let messages = widget_events(
+                widget,
+                size,
+                &events,
+                mouse::Cursor::Available(Point::new(-500.0, -500.0)),
+                capture_release,
+            );
+            assert_single_drop_without_navigation(&messages, "node");
+            assert!(controller.is_idle());
+        }
+    }
+
+    #[test]
+    fn widget_scrolled_source_drag_submits_one_drop_without_click_with_stale_batch_cursor() {
+        let size = Size::new(500.0, 480.0);
+        let panel = PanelState::default();
+        let geometry = Geometry::new(Rectangle::with_size(size), panel);
+        let origin = Point::new(110.0, 20.0);
+        let endpoint = geometry.collector.center();
+        // Move the row's content origin from y=160 to window y=0. The actual
+        // Scrollable must translate the ordered press cursor back to y=180.
+        let events = [
+            moved(Point::new(110.0, 100.0)),
+            UiEvent::Mouse(mouse::Event::WheelScrolled {
+                delta: mouse::ScrollDelta::Pixels { x: 0.0, y: -160.0 },
+            }),
+            moved(origin),
+            pressed(),
+            moved(endpoint),
+            mouse_released(),
+        ];
+        for capture_release in [false, true] {
+            let controller = Controller::default();
+            let row = source(
+                Space::new().width(Length::Fill).height(48.0).into(),
+                controller.clone(),
+                Some(entry(1, "node")),
+                AppMessage::Navigate("node".into()),
+            );
+            let content = scrollable(column![
+                Space::new().height(160.0),
+                row,
+                Space::new().height(800.0),
+            ])
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+            let widget = workspace(
+                content,
+                space(),
+                controller.clone(),
+                panel,
+                Some(scope(1)),
+                true,
+                true,
+                AppMessage::CollectorInteraction,
+            );
+            let messages = widget_events(
+                widget,
+                size,
+                &events,
+                mouse::Cursor::Available(Point::new(-500.0, -500.0)),
+                capture_release,
+            );
+            assert_single_drop_without_navigation(&messages, "node");
+            assert!(controller.is_idle());
+        }
+    }
+
+    #[test]
+    fn widget_divider_drag_publishes_height_without_drop_or_chart_navigation() {
+        let size = Size::new(500.0, 480.0);
+        let panel = PanelState::default();
+        let geometry = Geometry::new(Rectangle::with_size(size), panel);
+        let origin = geometry.divider.center();
+        let endpoint = Point::new(origin.x, origin.y - 100.0);
+        let events = [moved(origin), pressed(), moved(endpoint), mouse_released()];
+        let controller = Controller::default();
+        let widget = workspace(
+            chart(&[], entry(1, "node"), controller.clone()),
+            space(),
+            controller.clone(),
+            panel,
+            Some(scope(1)),
+            true,
+            true,
+            AppMessage::CollectorInteraction,
+        );
+        let messages = widget_events(
+            widget,
+            size,
+            &events,
+            mouse::Cursor::Available(Point::new(-500.0, -500.0)),
+            true,
+        );
+        let heights = messages
+            .iter()
+            .filter_map(|message| {
+                if let AppMessage::CollectorInteraction(Event::HeightChanged(height)) = message {
+                    Some(*height)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(heights, vec![164.0]);
+        assert!(heights[0] > COLLAPSED_HEIGHT);
+        assert!(!messages.iter().any(|message| matches!(
+            message,
+            AppMessage::CollectorInteraction(Event::Dropped(_))
+                | AppMessage::ChartReleased { .. }
+                | AppMessage::Navigate(_)
+                | AppMessage::Up
+        )));
+        assert!(controller.is_idle());
     }
 
     #[test]

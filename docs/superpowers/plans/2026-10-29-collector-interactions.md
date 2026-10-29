@@ -99,7 +99,7 @@ collector_panel: collector_interaction::PanelState,
 
 ## Verification record
 
-The integrated ordered-pointer code passed 171 Rust tests, 11 Python tests,
+The integrated ordered-pointer code and widget regressions passed 174 Rust tests, 11 Python tests,
 formatting, Clippy (with warnings), and release MCP fixture workflows. Before
 the ordered-pointer correction, local native input positively demonstrated a
 pre-hovered list-row drop (0 to 1 without navigation); chart and divider were
@@ -112,3 +112,16 @@ of events with one final base cursor. Workspace now records input positions in
 event order and dispatches the ordered cursor to children before Scrollable
 translation. Five regression tests cover stale release cursor, same-batch source
 hit, resize release, unavailable pointer and first fallback/levitation.
+
+Three additional headless widget tests instantiate the actual tiny-skia renderer,
+widget tree, layout and shell. They drive a Sunburst Canvas, a Scrollable with a
+row moved by 160px, and the divider through complete pointer sequences while
+passing a deliberately stale frame cursor. Chart/list drops occur exactly once
+without navigation, including an already-captured release; a 100px upward divider
+drag publishes a 164px collector height. No window or display is created by these
+tests. Native chart/divider acceptance remains separate from this evidence.
+
+Product commit `2c6de26` passed all three native workflow jobs in
+[run 40862955428](https://github.com/looading/ohMyDisk/actions/runs/40862955428):
+Windows x64, macOS Apple Silicon and macOS Intel. Each job completed workspace
+tests, historical benchmark smoke, MCP/native recycle-bin smoke, and packaging.
