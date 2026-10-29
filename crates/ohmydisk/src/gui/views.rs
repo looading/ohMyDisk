@@ -2,6 +2,51 @@
 use super::*;
 use iced::widget::column;
 
+const HEADER_HEIGHT: f32 = 48.0;
+const COMPACT_WIDTH: f32 = 1000.0;
+const MODAL_MARGIN: f32 = 12.0;
+
+fn compact_for_size(size: iced::Size) -> bool {
+    size.width < COMPACT_WIDTH
+}
+fn fitted_modal_size(size: iced::Size, preferred_width: f32, preferred_height: f32) -> iced::Size {
+    iced::Size::new(
+        preferred_width.min((size.width - 2.0 * MODAL_MARGIN).max(1.0)),
+        preferred_height.min((size.height - HEADER_HEIGHT - 1.0 - 2.0 * MODAL_MARGIN).max(1.0)),
+    )
+}
+#[derive(Debug, Clone, Copy)]
+struct CenterLayout {
+    amount_size: f32,
+    label_size: f32,
+    show_amount: bool,
+    show_label: bool,
+    show_name: bool,
+    show_hint: bool,
+}
+fn center_layout(size: iced::Size, amount: &str, label: &str) -> CenterLayout {
+    let side = size.width.min(size.height).max(0.0);
+    let available = side * 0.465 * 0.27 * 2.0 * 0.82;
+    let units = |value: &str| {
+        value
+            .chars()
+            .map(|c| if c.is_ascii() { 0.62 } else { 1.0 })
+            .sum::<f32>()
+            .max(1.0)
+    };
+    CenterLayout {
+        amount_size: (available / units(amount)).clamp(8.0, 26.0),
+        label_size: (available / units(label)).clamp(7.0, 10.0),
+        show_amount: side >= 180.0,
+        show_label: side >= 320.0,
+        show_name: side >= 420.0,
+        show_hint: side >= 480.0,
+    }
+}
+fn chrome_action(action: window_chrome::Action) -> Message {
+    Message::WindowChrome(window_chrome::Message::Action(action))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum CollectionContext {
     Current,
@@ -10,6 +55,42 @@ pub(super) enum CollectionContext {
 }
 
 impl App {
+    pub(super) fn compact_layout(&self) -> bool {
+        compact_for_size(self.chrome.size)
+    }
+    pub(super) fn modal_dimensions(
+        &self,
+        preferred_width: f32,
+        preferred_height: f32,
+    ) -> iced::Size {
+        fitted_modal_size(self.chrome.size, preferred_width, preferred_height)
+    }
+    fn short_layout(&self) -> bool {
+        self.chrome.size.height < 760.0
+    }
+    fn preview_switch(&self) -> Element<'_, Message> {
+        let mut buttons = Row::new().spacing(3);
+        for (preview, label) in [(false, "图表"), (true, "列表")] {
+            let selected = self.compact_preview == preview;
+            buttons = buttons.push(
+                button(text(label).size(11))
+                    .padding([7, 10])
+                    .style(move |theme, status| {
+                        if selected {
+                            selected_button(theme, status)
+                        } else {
+                            quiet_button(theme, status)
+                        }
+                    })
+                    .on_press_maybe((!selected).then_some(Message::ToggleCompactPreview)),
+            );
+        }
+        container(buttons)
+            .padding(3)
+            .style(|_| rounded_style(PANEL, 9.0))
+            .into()
+    }
+
     pub(super) fn capacity(&self) -> Option<Capacity> {
         self.scan
             .as_ref()?
@@ -252,21 +333,20 @@ impl App {
         Task::none()
     }
     pub(super) fn view(&self) -> Element<'_, Message> {
-        let mut body = column![self.header(), rule::horizontal(1)].spacing(0);
+        let mut body = Column::new().spacing(0).height(Length::Fill);
         if let Some(banner) = &self.banner {
             body = body.push(
                 container(
                     row![
-                        text(banner).size(12).color(WARNING),
-                        Space::new().width(Length::Fill),
+                        text(banner).size(11).color(WARNING).width(Length::Fill),
                         button("×")
                             .style(quiet_button)
                             .on_press(Message::ClearBanner)
                     ]
-                    .spacing(12)
+                    .spacing(10)
                     .align_y(Alignment::Center),
                 )
-                .padding([9, 24])
+                .padding([7, 12])
                 .width(Length::Fill)
                 .style(|_| panel_style(Color::from_rgb(0.17, 0.13, 0.105))),
             );
@@ -277,7 +357,7 @@ impl App {
             body = body.push(column![self.navigation(), self.analysis()].height(Length::Fill));
         }
         body = body.push(self.collector());
-        let main: Element<'_, Message> = container(body)
+        let body: Element<'_, Message> = container(body)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(|_| panel_style(BG))
@@ -289,9 +369,9 @@ impl App {
         } else {
             None
         };
-        if let Some(overlay) = overlay {
+        let workspace: Element<'_, Message> = if let Some(overlay) = overlay {
             stack![
-                main,
+                body,
                 iced::widget::opaque(
                     container(overlay)
                         .width(Length::Fill)
@@ -303,17 +383,28 @@ impl App {
             ]
             .into()
         } else {
-            main
-        }
+            body
+        };
+        // Window controls are outside the modal workspace. Only application content is blocked.
+        let content =
+            container(column![self.header(), rule::horizontal(1), workspace].height(Length::Fill))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(|_| panel_style(BG))
+                .into();
+        window_chrome::frame(content, self.chrome.is_maximized(), chrome_action)
     }
     pub(super) fn header(&self) -> Element<'_, Message> {
-        let brand = row![text("◉").size(23).color(GREEN), text("ohMyDisk").size(18)]
-            .spacing(9)
-            .align_y(Alignment::Center);
-        container(
-            row![
-                brand,
-                Space::new().width(Length::Fill),
+        let compact = self.compact_layout();
+        let mut title = row![
+            text("◉").size(20).color(GREEN),
+            text("ohMyDisk").size(if compact { 16 } else { 18 })
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
+        title = title.push(Space::new().width(Length::Fill));
+        if !compact {
+            title = title.push(
                 text(if self.connecting {
                     "正在连接本地服务…"
                 } else if self.client.is_some() {
@@ -323,38 +414,66 @@ impl App {
                 })
                 .size(11)
                 .color(MUTED),
-                button(text("＋ 扫描文件夹").size(12))
-                    .padding([8, 13])
-                    .style(accent_button)
-                    .on_press_maybe(
-                        self.client
-                            .as_ref()
-                            .filter(|_| self.active.is_none())
-                            .map(|_| Message::PickFolder)
-                    )
-            ]
-            .spacing(18)
-            .align_y(Alignment::Center),
+            );
+        }
+        let drag = window_chrome::drag_area(
+            container(title)
+                .height(HEADER_HEIGHT)
+                .center_y(HEADER_HEIGHT)
+                .padding([0, 12])
+                .width(Length::Fill)
+                .into(),
+            chrome_action,
+        );
+        let pick = button(
+            text(if compact {
+                "＋ 文件夹"
+            } else {
+                "＋ 扫描文件夹"
+            })
+            .size(12),
         )
-        .padding([13, 24])
-        .into()
+        .padding([8, 11])
+        .style(accent_button)
+        .on_press_maybe(
+            self.client
+                .as_ref()
+                .filter(|_| {
+                    self.active.is_none()
+                        && !self.busy
+                        && self.review.is_none()
+                        && self.result.is_none()
+                })
+                .map(|_| Message::PickFolder),
+        );
+        let mut header = Row::new().align_y(Alignment::Center).height(HEADER_HEIGHT);
+        if cfg!(target_os = "macos") {
+            header = header.push(Space::new().width(window_chrome::MACOS_TRAFFIC_LIGHT_WIDTH));
+        }
+        header = header
+            .push(drag)
+            .push(pick)
+            .push(Space::new().width(8))
+            .push(self.chrome.controls().map(Message::WindowChrome));
+        container(header)
+            .height(HEADER_HEIGHT)
+            .width(Length::Fill)
+            .style(|_| panel_style(BG))
+            .into()
     }
     pub(super) fn sources_view(&self) -> Element<'_, Message> {
-        let mut disks = column![row![
-            column![
-                text("磁盘与文件夹").size(27),
-                text("先看容量，再探索占用空间。").size(13).color(MUTED)
-            ]
-            .spacing(8),
-            Space::new().width(Length::Fill)
-        ]]
-        .spacing(18);
+        let compact = self.compact_layout();
+        let mut disks = column![
+            text("磁盘与文件夹").size(if compact { 24 } else { 27 }),
+            text("先看容量，再探索占用空间。").size(12).color(MUTED)
+        ]
+        .spacing(14);
         for source in &self.sources {
             let totals = source
                 .space_observation
                 .as_ref()
-                .filter(|o| o.capacity_scope != "caller_view")
-                .map(|o| (o.total_bytes, o.available_bytes))
+                .filter(|observation| observation.capacity_scope != "caller_view")
+                .map(|observation| (observation.total_bytes, observation.available_bytes))
                 .unwrap_or((0, 0));
             let valid = totals.0 > 0 && totals.1 <= totals.0;
             let ratio = if valid {
@@ -368,8 +487,8 @@ impl App {
             let mut actions = Row::new().spacing(8).align_y(Alignment::Center);
             if let Some(scan) = recent {
                 actions = actions.push(
-                    button(text("查看结果").size(12))
-                        .padding([9, 14])
+                    button(text("查看结果").size(11))
+                        .padding([8, 12])
                         .style(quiet_button)
                         .on_press(Message::OpenScan(scan.scan_id.clone())),
                 );
@@ -383,24 +502,31 @@ impl App {
                     })
                     .size(12),
                 )
-                .padding([9, 18])
+                .padding([8, 16])
                 .style(accent_button)
                 .on_press_maybe(
                     source
                         .mount_path
                         .to_path()
                         .ok()
-                        .filter(|_| self.active.is_none())
+                        .filter(|_| self.active.is_none() && !self.busy)
                         .map(Message::StartScan),
                 ),
             );
             let info = column![
-                text(crop(&source.name, 42)).size(16),
-                text(crop(&source.mount_path.display, 75))
-                    .size(11)
-                    .color(MUTED)
+                text(crop(&source.name, if compact { 30 } else { 42 }))
+                    .size(15)
+                    .width(Length::Fill),
+                text(crop(
+                    &source.mount_path.display,
+                    if compact { 52 } else { 75 }
+                ))
+                .size(10)
+                .color(MUTED)
+                .width(Length::Fill)
             ]
-            .spacing(7);
+            .spacing(6)
+            .width(Length::Fill);
             let mut usage = column![
                 text(if valid {
                     format!("{} 可用 · {} 总容量", bytes(totals.1), bytes(totals.0))
@@ -410,28 +536,39 @@ impl App {
                 .size(11)
                 .color(MUTED)
             ]
-            .spacing(9)
-            .width(260);
+            .spacing(8);
             if valid {
                 usage = usage.push(iced::widget::progress_bar(0.0..=1.0, ratio).girth(5));
             }
+            let card: Element<'_, Message> = if compact {
+                column![
+                    row![text("▣").size(24).color(GREEN), info]
+                        .spacing(12)
+                        .align_y(Alignment::Center),
+                    usage.width(Length::Fill),
+                    row![Space::new().width(Length::Fill), actions]
+                ]
+                .spacing(12)
+                .into()
+            } else {
+                row![
+                    text("▣").size(26).color(GREEN),
+                    info,
+                    usage.width(260),
+                    actions
+                ]
+                .spacing(22)
+                .align_y(Alignment::Center)
+                .into()
+            };
             disks = disks.push(
-                container(
-                    row![
-                        text("▣").size(26).color(GREEN),
-                        info.width(Length::Fill),
-                        usage,
-                        actions
-                    ]
-                    .spacing(25)
-                    .align_y(Alignment::Center),
-                )
-                .padding([20, 22])
-                .width(Length::Fill)
-                .style(|_| rounded_style(CARD, 12.0)),
+                container(card)
+                    .padding(if compact { 16 } else { 20 })
+                    .width(Length::Fill)
+                    .style(|_| rounded_style(CARD, 12.0)),
             );
             if let Some(hint) = source_hint(source) {
-                disks = disks.push(text(hint).size(10).color(MUTED));
+                disks = disks.push(text(hint).size(10).color(MUTED).width(Length::Fill));
             }
         }
         if self.sources.is_empty() {
@@ -441,6 +578,7 @@ impl App {
                 } else {
                     "选择一个文件夹开始分析。"
                 })
+                .size(12)
                 .color(MUTED),
             );
         }
@@ -453,42 +591,51 @@ impl App {
             disks = disks.push(
                 text("APFS 系统入口与数据入口可能共享同一容器，容量不能相加。")
                     .size(11)
-                    .color(MUTED),
+                    .color(MUTED)
+                    .width(Length::Fill),
             );
         }
         if self.client.is_none() && !self.connecting {
             disks = disks.push(
                 button("重新连接")
+                    .padding(9)
                     .style(accent_button)
                     .on_press(Message::Retry),
             );
         }
-        disks = disks.push(Space::new().height(14)).push(row![
-            text("已保存的扫描").size(16),
+        disks = disks.push(Space::new().height(8)).push(row![
+            text("已保存的扫描").size(15),
             Space::new().width(Length::Fill),
-            text(self.scans.len().to_string()).size(12).color(MUTED)
+            text(self.scans.len().to_string()).size(11).color(MUTED)
         ]);
         for scan in &self.scans {
             let info = column![
-                text(crop(&scan.root_path.display, 92)).size(13),
-                text(format!(
-                    "{} · {}",
-                    scan_size_summary(scan),
-                    timestamp(scan.created_at)
-                ))
-                .size(11)
+                text(crop(&scan.root_path.display, if compact { 55 } else { 92 }))
+                    .size(12)
+                    .width(Length::Fill),
+                text(if compact {
+                    scan_size_summary(scan)
+                } else {
+                    format!(
+                        "{} · {}",
+                        scan_size_summary(scan),
+                        timestamp(scan.created_at)
+                    )
+                })
+                .size(10)
                 .color(MUTED)
+                .width(Length::Fill)
             ]
             .spacing(6);
             disks = disks.push(
                 row![
                     button(info)
                         .width(Length::Fill)
-                        .padding([13, 16])
+                        .padding([11, 10])
                         .style(quiet_button)
                         .on_press(Message::OpenScan(scan.scan_id.clone())),
-                    button(text("关闭记录").size(11))
-                        .padding(10)
+                    button(text(if compact { "×" } else { "关闭记录" }).size(11))
+                        .padding(9)
                         .style(quiet_button)
                         .on_press(Message::CloseScan(scan.scan_id.clone()))
                 ]
@@ -503,8 +650,8 @@ impl App {
             );
         }
         let mut content = column![scrollable(disks).height(Length::Fill)]
-            .spacing(15)
-            .padding([28, 38])
+            .spacing(12)
+            .padding(if compact { 16 } else { 28 })
             .height(Length::Fill);
         if self.active.is_some() {
             content = content.push(self.job_strip());
@@ -512,54 +659,89 @@ impl App {
         content.into()
     }
     pub(super) fn navigation(&self) -> Element<'_, Message> {
-        let mut path = Row::new().spacing(3).align_y(Alignment::Center);
-        path = path.push(
-            button(text("磁盘与文件夹").size(12))
-                .padding([7, 8])
+        let compact = self.compact_layout();
+        let controls = row![
+            button("‹")
+                .padding([6, 10])
                 .style(quiet_button)
-                .on_press(Message::Overview),
-        );
-        let skip = self.breadcrumbs.len().saturating_sub(4);
+                .on_press_maybe((self.history_index > 0).then_some(Message::Back)),
+            button("›")
+                .padding([6, 10])
+                .style(quiet_button)
+                .on_press_maybe(
+                    (self.history_index + 1 < self.history.len()).then_some(Message::Forward)
+                ),
+            button("↑")
+                .padding([6, 10])
+                .style(quiet_button)
+                .on_press_maybe((self.breadcrumbs.len() > 1).then_some(Message::Up))
+        ]
+        .spacing(2);
+        let overview = button(
+            text(if compact {
+                "磁盘"
+            } else {
+                "磁盘与文件夹"
+            })
+            .size(11),
+        )
+        .padding([6, 7])
+        .style(quiet_button)
+        .on_press(Message::Overview);
+        let rescan = button(text(if compact { "↻" } else { "↻ 重新扫描" }).size(12))
+            .padding([7, 10])
+            .style(quiet_button)
+            .on_press_maybe(
+                self.scan
+                    .as_ref()
+                    .filter(|_| self.active.is_none() && !self.busy)
+                    .map(|_| Message::Rescan),
+            );
+        let mut path = Row::new().spacing(3).align_y(Alignment::Center);
+        let count = if self.chrome.size.width < 1200.0 {
+            2
+        } else {
+            3
+        };
+        let skip = self.breadcrumbs.len().saturating_sub(count);
         if skip > 0 {
-            path = path.push(text("/ …").size(12).color(MUTED));
+            path = path.push(text("… /").size(11).color(MUTED));
         }
-        for location in self.breadcrumbs.iter().skip(skip) {
-            path = path.push(text("/").size(12).color(MUTED)).push(
-                button(text(crop(&location.name, 19)).size(12))
-                    .padding([7, 5])
+        for (index, location) in self.breadcrumbs.iter().enumerate().skip(skip) {
+            if index > skip {
+                path = path.push(text("/").size(11).color(MUTED));
+            }
+            path = path.push(
+                button(text(crop(&location.name, if compact { 13 } else { 17 })).size(11))
+                    .padding([5, 4])
                     .style(quiet_button)
                     .on_press(Message::Navigate(location.id.clone())),
             );
         }
-        container(
-            row![
-                button("‹")
-                    .padding([7, 11])
-                    .style(quiet_button)
-                    .on_press_maybe((self.history_index > 0).then_some(Message::Back)),
-                button("›")
-                    .padding([7, 11])
-                    .style(quiet_button)
-                    .on_press_maybe(
-                        (self.history_index + 1 < self.history.len()).then_some(Message::Forward)
-                    ),
-                path,
-                Space::new().width(Length::Fill),
-                button(text("↻ 重新扫描").size(12))
-                    .padding([8, 12])
-                    .style(quiet_button)
-                    .on_press_maybe(
-                        self.scan
-                            .as_ref()
-                            .filter(|_| self.active.is_none())
-                            .map(|_| Message::Rescan)
-                    )
+        let path = scrollable(path)
+            .direction(scrollable::Direction::Horizontal(
+                scrollable::Scrollbar::default(),
+            ))
+            .width(Length::Fill);
+        let content: Element<'_, Message> = if compact {
+            column![
+                row![controls, overview, Space::new().width(Length::Fill), rescan]
+                    .spacing(5)
+                    .align_y(Alignment::Center),
+                path
             ]
-            .spacing(5)
-            .align_y(Alignment::Center),
-        )
-        .padding([9, 20])
-        .into()
+            .spacing(3)
+            .into()
+        } else {
+            row![controls, overview, path, rescan]
+                .spacing(7)
+                .align_y(Alignment::Center)
+                .into()
+        };
+        container(content)
+            .padding([6, 12])
+            .width(Length::Fill)
+            .into()
     }
     pub(super) fn job_strip(&self) -> Element<'_, Message> {
         let Some(job) = &self.active else {
@@ -598,6 +780,22 @@ impl App {
         let Some(scan) = &self.scan else {
             return Space::new().into();
         };
+        if self.compact_layout() && self.compact_preview {
+            return column![
+                container(
+                    row![
+                        self.preview_switch(),
+                        Space::new().width(Length::Fill),
+                        text("目录预览").size(11).color(MUTED)
+                    ]
+                    .align_y(Alignment::Center)
+                )
+                .padding([6, 12]),
+                self.directory_list()
+            ]
+            .height(Length::Fill)
+            .into();
+        }
         let attribution_visible = self.capacity().is_some();
         let focus = if attribution_visible {
             self.hover.as_deref().and_then(|id| self.find_node(id))
@@ -686,48 +884,65 @@ impl App {
         } else {
             "已归属占用"
         };
-        let center = container(
-            column![
-                text(center_label).size(10).color(MUTED),
-                text(amount).size(26),
-                text(crop(name, 10)).size(10).color(MUTED),
-                text(if self.breadcrumbs.len() > 1 {
-                    "↑ 点击圆心返回"
-                } else if focus.is_some() {
-                    "文件详情见右侧"
-                } else if self.capacity().is_some() && self.display_mode() == RootMode::Directory {
-                    "目录内容"
-                } else {
-                    "系统观测"
-                })
-                .size(9)
-                .color(MUTED)
-            ]
-            .spacing(6)
-            .align_x(Alignment::Center),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .center_x(Length::Fill)
-        .center_y(Length::Fill);
+        let header_metric = format!("{center_label} · {amount}");
         let effective_hover = focus
             .map(|node| sunburst::Target::Node(node.id.clone()))
             .or_else(|| sector.map(|segment| segment.target.clone()));
-        let graph = canvas(sunburst::Sunburst {
-            segments: &self.segments,
-            hover: effective_hover,
-            collected: self.chart_collection_ids(),
-            can_go_up: self.breadcrumbs.len() > 1,
-            drag_label: self
-                .drag
-                .as_deref()
-                .and_then(|id| self.find_node(id))
-                .map(|node| node.name.as_str()),
+        // Responsive sees the actual chart allocation, including a short window or expanded collector.
+        let graph = iced::widget::responsive(move |size| {
+            let layout = center_layout(size, &amount, center_label);
+            let graph = canvas(sunburst::Sunburst {
+                segments: &self.segments,
+                hover: effective_hover.clone(),
+                collected: self.chart_collection_ids(),
+                can_go_up: self.breadcrumbs.len() > 1 && size.width.min(size.height) >= 96.0,
+                drag_label: self
+                    .drag
+                    .as_deref()
+                    .and_then(|id| self.find_node(id))
+                    .map(|node| node.name.as_str()),
+            })
+            .width(Length::Fill)
+            .height(Length::Fill);
+            if !layout.show_amount {
+                return graph.into();
+            }
+            let mut lines = Column::new()
+                .spacing(if layout.show_name { 5 } else { 3 })
+                .align_x(Alignment::Center);
+            if layout.show_label {
+                lines = lines.push(text(center_label).size(layout.label_size).color(MUTED));
+            }
+            lines = lines.push(text(amount.clone()).size(layout.amount_size));
+            if layout.show_name {
+                lines = lines.push(text(crop(name, 10)).size(10).color(MUTED));
+            }
+            if layout.show_hint {
+                lines = lines.push(
+                    text(if self.breadcrumbs.len() > 1 {
+                        "↑ 点击圆心返回"
+                    } else if focus.is_some() {
+                        "文件详情见右侧"
+                    } else if self.capacity().is_some()
+                        && self.display_mode() == RootMode::Directory
+                    {
+                        "目录内容"
+                    } else {
+                        "系统观测"
+                    })
+                    .size(9)
+                    .color(MUTED),
+                );
+            }
+            let center = container(lines)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill);
+            stack![graph, center].into()
         })
         .width(Length::Fill)
         .height(Length::Fill);
-        // The canvas owns pointer hit testing; the central text is a passive overlay.
-        let graph = stack![graph, center];
         let status = if scan.known_stale {
             "旧快照 · 正在刷新"
         } else if self.capacity().is_none() {
@@ -749,46 +964,64 @@ impl App {
         } else {
             "扫描不完整"
         };
-        let mut chart = column![
-            row![
-                column![
-                    text(crop(
-                        self.location
-                            .as_ref()
-                            .map(|l| l.name.as_str())
-                            .unwrap_or("空间分析"),
-                        38
-                    ))
-                    .size(22),
-                    text(if self.capacity().is_none() {
-                        "当前仅显示系统容量概览"
-                    } else if self.loading {
-                        "正在载入目录…"
-                    } else {
-                        "悬停预览 · 点击进入 · 拖入收集区"
-                    })
-                    .size(11)
-                    .color(MUTED)
-                ]
-                .spacing(7)
-                .width(Length::Fill),
-                self.scope_switch(),
-                pill(
-                    status,
-                    if self.capacity().is_some() {
-                        GREEN
-                    } else {
-                        WARNING
-                    }
-                )
-            ]
-            .align_y(Alignment::Center),
-            graph
+        let compact = self.compact_layout();
+        let short = self.short_layout();
+        let title = column![
+            text(crop(
+                self.location
+                    .as_ref()
+                    .map(|location| location.name.as_str())
+                    .unwrap_or("空间分析"),
+                if compact { 24 } else { 38 }
+            ))
+            .size(if compact { 18 } else { 22 })
+            .width(Length::Fill),
+            text(if compact || short {
+                header_metric
+            } else if self.capacity().is_none() {
+                "当前仅显示系统容量概览".into()
+            } else if self.loading {
+                "正在载入目录…".into()
+            } else {
+                "悬停预览 · 点击进入 · 拖入收集区".into()
+            })
+            .size(11)
+            .color(MUTED)
+            .width(Length::Fill)
         ]
-        .spacing(12)
-        .padding([15, 26])
-        .width(Length::Fill)
-        .height(Length::Fill);
+        .spacing(6)
+        .width(Length::Fill);
+        let badge = pill(
+            status,
+            if self.capacity().is_some() {
+                GREEN
+            } else {
+                WARNING
+            },
+        );
+        let heading: Element<'_, Message> = if compact {
+            column![
+                row![title, badge].spacing(8).align_y(Alignment::Center),
+                row![
+                    self.scope_switch(),
+                    Space::new().width(Length::Fill),
+                    self.preview_switch()
+                ]
+                .align_y(Alignment::Center)
+            ]
+            .spacing(7)
+            .into()
+        } else {
+            row![title, self.scope_switch(), badge]
+                .spacing(10)
+                .align_y(Alignment::Center)
+                .into()
+        };
+        let mut chart = column![heading, graph]
+            .spacing(if compact { 8 } else { 12 })
+            .padding([10, if compact { 12 } else { 26 }])
+            .width(Length::Fill)
+            .height(Length::Fill);
         if let Some((total, available)) = self.observed_totals() {
             let mut labels = Row::new().spacing(14).align_y(Alignment::Center);
             let directory = self.capacity().is_some() && self.display_mode() == RootMode::Directory;
@@ -810,18 +1043,24 @@ impl App {
                     .push(legend("系统已用 / 保留", Color::from_rgb(0.30, 0.45, 0.66)))
                     .push(legend("可用", MUTED));
             }
-            chart = chart.push(
-                labels.push(Space::new().width(Length::Fill)).push(
-                    text(format!(
-                        "{}{} 可用 / {}",
-                        if directory { "所在卷 " } else { "" },
-                        bytes(available),
-                        bytes(total)
-                    ))
-                    .size(11)
-                    .color(MUTED),
-                ),
+            let capacity_label = format!(
+                "{}{} 可用 / {}",
+                if directory { "所在卷 " } else { "" },
+                bytes(available),
+                bytes(total)
             );
+            if short {
+                chart = chart.push(text(capacity_label).size(10).color(MUTED));
+            } else if compact {
+                chart = chart
+                    .push(column![labels, text(capacity_label).size(10).color(MUTED)].spacing(5));
+            } else {
+                chart = chart.push(
+                    labels
+                        .push(Space::new().width(Length::Fill))
+                        .push(text(capacity_label).size(11).color(MUTED)),
+                );
+            }
         }
         let captured = if self.capacity().is_some() {
             format!("快照 {}", timestamp(scan.created_at))
@@ -830,23 +1069,30 @@ impl App {
         } else {
             "未取得系统容量观测".into()
         };
-        chart = chart.push(
-            text(format!(
-                "{} · {captured}",
-                self.location
-                    .as_ref()
-                    .map(|location| crop(&location.path, 75))
-                    .unwrap_or_default()
-            ))
-            .size(10)
-            .color(MUTED),
-        );
+        if !short {
+            chart = chart.push(
+                text(format!(
+                    "{} · {captured}",
+                    self.location
+                        .as_ref()
+                        .map(|location| crop(&location.path, if compact { 45 } else { 75 }))
+                        .unwrap_or_default()
+                ))
+                .size(9)
+                .color(MUTED)
+                .width(Length::Fill),
+            );
+        }
         if self.active.is_some() {
             chart = chart.push(self.job_strip());
         }
-        row![chart, self.directory_list()]
-            .height(Length::Fill)
-            .into()
+        if compact {
+            chart.into()
+        } else {
+            row![chart, self.directory_list()]
+                .height(Length::Fill)
+                .into()
+        }
     }
     pub(super) fn directory_list(&self) -> Element<'_, Message> {
         if self.capacity().is_none() {
@@ -1023,7 +1269,9 @@ impl App {
         }
         let mut pane = column![
             row![
-                text(crop(heading, 30)).size(15),
+                text(crop(heading, if self.compact_layout() { 24 } else { 30 }))
+                    .size(15)
+                    .width(Length::Fill),
                 Space::new().width(Length::Fill),
                 text(if self.preview_owner.is_some() {
                     "预览"
@@ -1085,8 +1333,12 @@ impl App {
         }
         mouse_area(
             container(pane.spacing(12))
-                .padding([20, 17])
-                .width(350)
+                .padding(if self.compact_layout() { 12 } else { 17 })
+                .width(if self.compact_layout() {
+                    Length::Fill
+                } else {
+                    Length::Fixed(350.0)
+                })
                 .height(Length::Fill)
                 .style(|_| panel_style(PANEL)),
         )
@@ -1125,13 +1377,19 @@ impl App {
             ]
             .spacing(17),
         )
-        .padding(24)
-        .width(350)
+        .padding(if self.compact_layout() { 16 } else { 24 })
+        .width(if self.compact_layout() {
+            Length::Fill
+        } else {
+            Length::Fixed(350.0)
+        })
         .height(Length::Fill)
         .style(|_| panel_style(PANEL))
         .into()
     }
     pub(super) fn collector(&self) -> Element<'_, Message> {
+        let compact = self.compact_layout();
+        let dense = compact || self.short_layout();
         let drag_name = self
             .drag
             .as_deref()
@@ -1152,45 +1410,62 @@ impl App {
             }
         };
         let enabled = !self.collection.is_empty() && self.active.is_none() && !self.busy;
-        let title = row![
+        let trash = || {
+            button(
+                text(if self.busy {
+                    "正在准备…"
+                } else if compact {
+                    "回收站…"
+                } else {
+                    "移入回收站…"
+                })
+                .size(11),
+            )
+            .padding([8, 11])
+            .style(accent_button)
+            .on_press_maybe(enabled.then_some(Message::Prepare(CleanupMode::Trash)))
+        };
+        let clear = || {
+            button(text("清空").size(11))
+                .padding([7, 9])
+                .style(quiet_button)
+                .on_press_maybe(
+                    (!self.collection.is_empty() && !self.busy).then_some(Message::ClearCollection),
+                )
+        };
+        let permanent = || {
+            button(text("永久删除…").size(11))
+                .padding([8, 10])
+                .style(quiet_button)
+                .on_press_maybe(enabled.then_some(Message::Prepare(CleanupMode::Permanent)))
+        };
+        let mut title = row![
             button(
                 text(if self.collector_expanded {
                     "⌄ 收集区"
                 } else {
                     "› 收集区"
                 })
-                .size(13)
+                .size(12)
             )
-            .padding([8, 4])
+            .padding([7, 3])
             .style(quiet_button)
             .on_press(Message::ToggleCollector),
-            text(summary)
-                .size(12)
-                .color(if drag_name.is_some() { GREEN } else { MUTED }),
-            Space::new().width(Length::Fill),
-            button(text("清空").size(11))
-                .padding([8, 10])
-                .style(quiet_button)
-                .on_press_maybe(
-                    (!self.collection.is_empty() && !self.busy).then_some(Message::ClearCollection)
-                ),
-            button(
-                text(if self.busy {
-                    "正在准备…"
-                } else {
-                    "移入回收站…"
-                })
-                .size(12)
-            )
-            .padding([9, 14])
-            .style(accent_button)
-            .on_press_maybe(enabled.then_some(Message::Prepare(CleanupMode::Trash)))
+            text(if compact { crop(&summary, 36) } else { summary })
+                .size(if compact { 10 } else { 12 })
+                .color(if drag_name.is_some() { GREEN } else { MUTED })
+                .width(Length::Fill)
         ]
-        .spacing(13)
+        .spacing(if compact { 8 } else { 13 })
         .align_y(Alignment::Center);
-        let mut body = column![title].spacing(12);
+        if !compact {
+            title = title.push(clear()).push(trash());
+        } else if !self.collector_expanded {
+            title = title.push(trash());
+        }
+        let mut body = column![title].spacing(if dense { 7 } else { 12 });
         if self.collector_expanded {
-            let mut chips = Row::new().spacing(10);
+            let mut chips = Row::new().spacing(9).align_y(Alignment::Center);
             for node in &self.collection {
                 chips = chips.push(
                     container(
@@ -1201,16 +1476,16 @@ impl App {
                                     .size(10)
                                     .color(MUTED)
                             ]
-                            .spacing(5),
+                            .spacing(4),
                             button("×")
                                 .padding(5)
                                 .style(quiet_button)
                                 .on_press(Message::Remove(node.id.clone()))
                         ]
-                        .spacing(14)
+                        .spacing(12)
                         .align_y(Alignment::Center),
                     )
-                    .padding([10, 13])
+                    .padding([9, 12])
                     .style(|_| rounded_style(CARD, 8.0)),
                 );
             }
@@ -1221,33 +1496,44 @@ impl App {
                         .color(MUTED),
                 );
             }
-            body = body
-                .push(
+            let chips = scrollable(chips)
+                .direction(scrollable::Direction::Horizontal(
+                    scrollable::Scrollbar::default(),
+                ))
+                .width(Length::Fill)
+                .height(if dense { 58 } else { 66 });
+            if compact {
+                body = body.push(chips).push(
                     row![
-                        scrollable(chips)
-                            .direction(scrollable::Direction::Horizontal(
-                                scrollable::Scrollbar::default()
-                            ))
-                            .width(Length::Fill),
-                        button(text("永久删除…").size(11))
-                            .padding([9, 13])
-                            .style(quiet_button)
-                            .on_press_maybe(
-                                enabled.then_some(Message::Prepare(CleanupMode::Permanent))
-                            )
+                        clear(),
+                        Space::new().width(Length::Fill),
+                        permanent(),
+                        trash()
                     ]
-                    .spacing(20)
+                    .spacing(8)
                     .align_y(Alignment::Center),
-                )
-                .push(
-                    text("收集大小不等于可释放空间；实际变化以清理后的系统观测为准。")
-                        .size(10)
-                        .color(MUTED),
                 );
+            } else {
+                body = body.push(
+                    row![chips, permanent()]
+                        .spacing(18)
+                        .align_y(Alignment::Center),
+                );
+            }
+            body = body.push(
+                text(if dense {
+                    "实际释放空间以系统观测为准。"
+                } else {
+                    "收集大小不等于可释放空间；实际变化以清理后的系统观测为准。"
+                })
+                .size(10)
+                .color(MUTED)
+                .width(Length::Fill),
+            );
         }
         mouse_area(
             container(body)
-                .padding([10, 24])
+                .padding([if dense { 7 } else { 10 }, if compact { 12 } else { 24 }])
                 .width(Length::Fill)
                 .style(move |_| {
                     let mut style = panel_style(if self.collector_hover && self.drag.is_some() {
@@ -1448,6 +1734,94 @@ mod tests {
         app.collect("incomplete");
         assert_eq!(app.collection.len(), 1);
         assert!(app.banner.as_ref().unwrap().contains("不完整"));
+    }
+    #[test]
+    fn layout_boundaries_keep_modals_inside_the_header_and_viewport() {
+        for (width, height, compact) in [
+            (500.0, 480.0, true),
+            (800.0, 600.0, true),
+            (1000.0, 760.0, false),
+            (1370.0, 900.0, false),
+            (1370.0, 480.0, false),
+        ] {
+            let size = iced::Size::new(width, height);
+            assert_eq!(compact_for_size(size), compact);
+            let modal = fitted_modal_size(size, 760.0, 680.0);
+            assert!(modal.width + 2.0 * MODAL_MARGIN <= width);
+            assert!(modal.height + HEADER_HEIGHT + 1.0 + 2.0 * MODAL_MARGIN <= height);
+            assert!(modal.width > 0.0 && modal.height > 0.0);
+        }
+        assert_eq!(
+            fitted_modal_size(iced::Size::new(500.0, 480.0), 760.0, 680.0),
+            iced::Size::new(476.0, 407.0)
+        );
+        assert!(compact_for_size(iced::Size::new(999.0, 900.0)));
+    }
+    #[test]
+    fn chart_center_uses_actual_short_side_instead_of_the_window_width() {
+        for size in [
+            iced::Size::new(900.0, 120.0),
+            iced::Size::new(450.0, 180.0),
+            iced::Size::new(300.0, 320.0),
+            iced::Size::new(700.0, 550.0),
+        ] {
+            for amount in ["8.8 MB", "995 GB", "18447 PB", "未测量"] {
+                let label = "所在卷已用/保留";
+                let layout = center_layout(size, amount, label);
+                let hole = size.width.min(size.height) * 0.465 * 0.27 * 2.0;
+                if layout.show_amount {
+                    let text_units = amount
+                        .chars()
+                        .map(|c| if c.is_ascii() { 0.62 } else { 1.0 })
+                        .sum::<f32>();
+                    assert!(text_units * layout.amount_size <= hole * 0.9);
+                }
+                if size.height < 180.0 {
+                    assert!(!layout.show_amount);
+                    assert!(!layout.show_name);
+                }
+                if size.height < 420.0 {
+                    assert!(!layout.show_name);
+                    assert!(!layout.show_hint);
+                }
+            }
+        }
+    }
+    #[test]
+    fn compact_preview_preserves_hover_owner_across_old_clear_and_keeps_the_draft() {
+        let mut app = measured_app("/tmp/fixture", "complete");
+        app.chrome.size = iced::Size::new(500.0, 480.0);
+        let selected = node("selected", Some(100));
+        app.collection = vec![selected.clone()];
+        app.draft_scan_id = Some("measured".into());
+        app.review = Some(ReviewPlan {
+            id: "preserved-plan".into(),
+            hash: "preserved-hash".into(),
+            mode: CleanupMode::Permanent,
+            bytes: 100,
+            expires_at: ohmydisk_core::now_ms() + 60_000,
+            targets: vec![selected],
+            manifest: vec![],
+            next_cursor: None,
+        });
+        let amount = app.root_amount();
+        let _ = app.chart_hover(Some(sunburst::Target::Node("branch".into())));
+        let epoch = app.preview_epoch;
+        let _ = app.chart_hover(None);
+        let _ = app.update(Message::ToggleCompactPreview);
+        assert!(app.compact_preview);
+        let _ = app.update(Message::ClearPreview { epoch });
+        let _ = app.update(Message::PreviewPane(false));
+        assert_eq!(app.preview_owner.as_deref(), Some("branch"));
+        let _ = app.update(Message::ToggleCompactPreview);
+        assert!(!app.compact_preview);
+        assert!(app.preview_owner.is_none());
+        assert_eq!(app.collection.len(), 1);
+        assert_eq!(app.collection[0].id, "selected");
+        assert_eq!(app.draft_scan_id.as_deref(), Some("measured"));
+        assert_eq!(app.root_amount(), amount);
+        assert_eq!(app.review.as_ref().unwrap().id, "preserved-plan");
+        assert_eq!(app.review.as_ref().unwrap().hash, "preserved-hash");
     }
     #[test]
     fn expired_review_blocks_execution_without_discarding_the_draft() {

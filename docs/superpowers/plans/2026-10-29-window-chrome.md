@@ -51,14 +51,14 @@ pub(super) fn frame<'a, M: Clone + 'a>(
 ) -> iced::Element<'a, M>;
 ```
 
-- [ ] Add gesture regression tests: single press is Drag, second nearby press is
+- [x] Add gesture regression tests: single press is Drag, second nearby press is
   only ToggleMaximize, a moved window resets the double-click candidate.
-- [ ] Implement settings, event-driven State and controls with iced `drag`,
+- [x] Implement settings, event-driven State and controls with iced `drag`,
   `drag_resize`, `minimize`, `toggle_maximize`, `close` and state queries.
-- [ ] Add Windows edge/corner hit testing and matching cursors; test all eight
+- [x] Add Windows edge/corner hit testing and matching cursors; test all eight
   directions, the interior and maximized suppression.
-- [ ] Verify stale window replies cannot update a different/closed window.
-- [ ] Run module tests and Windows target check; report exact interface changes.
+- [x] Verify stale window replies cannot update a different/closed window.
+- [x] Run module tests and Windows target check; report exact interface changes.
 
 ## Task 2: App and adaptive views — root
 
@@ -73,24 +73,24 @@ compact_preview: bool,
 // Compact = chrome.size.width < 1000.0.
 ```
 
-- [ ] Map startup/window tasks and subscription, then route actions independently
+- [x] Map startup/window tasks and subscription, then route actions independently
   of application navigation and server jobs.
-- [ ] Build a header with reserved native Mac button space and Windows controls;
+- [x] Build a header with reserved native Mac button space and Windows controls;
   keep PickFolder and caption actions out of the drag area.
-- [ ] Switch compact analysis between chart and the existing preview pane; make
+- [x] Switch compact analysis between chart and the existing preview pane; make
   sources, navigation and collector fit 500 logical pixels.
-- [ ] Bound review/result panels to the viewport and scroll content without
+- [x] Bound review/result panels to the viewport and scroll content without
   hiding the confirmation phrase, back action or execution controls.
-- [ ] Add layout-boundary and compact draft/plan-preservation regression tests.
-- [ ] Run formatting and targeted GUI tests after integration.
+- [x] Add layout-boundary and compact draft/plan-preservation regression tests.
+- [x] Run formatting and targeted GUI tests after integration.
 
 ## Task 3: Integration, review and distribution — root/team
 
-- [ ] Run `cargo fmt --all --check`, `cargo test --locked --workspace`,
+- [x] Run `cargo fmt --all --check`, `cargo test --locked --workspace`,
   `cargo clippy --locked --workspace --all-targets`, and Python tests.
-- [ ] Build release and run fixture-only MCP smoke; compare scanner source to
+- [x] Build release and run fixture-only MCP smoke; compare scanner source to
   baseline to confirm this window change does not alter measurement behavior.
-- [ ] Review event routing, modal hit behavior, native platform configuration and
+- [x] Review event routing, modal hit behavior, native platform configuration and
   sizing constraints independently.
 - [ ] Update the existing PR description for the final window feature scope;
   run native Windows x64, macOS ARM and Intel CI and verify artifacts.
@@ -99,3 +99,16 @@ compact_preview: bool,
 
 The approved design is
 [`2026-10-29-window-chrome-design.md`](../specs/2026-10-29-window-chrome-design.md).
+
+## Verification record
+
+The window code passed 145 local Rust tests, 11 Python tests, formatting and
+Clippy (with lint warnings). Release MCP smoke passed both supervised and auto
+modes. A standalone iced-only harness type-checked the Windows window module;
+whole-application local MSVC cross-check requires the Windows C SDK for bundled
+SQLite, so native CI is the full-build gate. Independent reviews found no
+blocking window/widget or modal authorization defects.
+
+A separate user-authorized scan-reliability task is editing core/service files
+in the shared checkout. This task commits only the GUI, its README changes and
+this plan; clean-checkout verification keeps those backend edits separate.

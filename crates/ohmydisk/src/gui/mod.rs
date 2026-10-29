@@ -3,6 +3,7 @@
 mod space_view;
 mod sunburst;
 mod views;
+mod window_chrome;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -45,11 +46,7 @@ pub fn run(data_dir: PathBuf) -> iced::Result {
         .subscription(App::subscription)
         .theme(Theme::Dark)
         .default_font(chinese_font())
-        .window(iced::window::Settings {
-            size: iced::Size::new(1370.0, 900.0),
-            min_size: Some(iced::Size::new(1120.0, 760.0)),
-            ..iced::window::Settings::default()
-        })
+        .window(window_chrome::settings())
         .centered();
     // iced's bundled Latin font does not contain CJK. Register an OS supplied
     // face so both Chinese labels and non-Latin filenames render on first boot.
@@ -195,6 +192,8 @@ struct ReviewPlan {
 
 #[derive(Clone)]
 enum Message {
+    WindowChrome(window_chrome::Message),
+    ToggleCompactPreview,
     Connected(Result<Client, String>),
     Response(Response, Result<Value, String>),
     Overview,
@@ -257,6 +256,8 @@ impl std::fmt::Debug for Message {
 }
 
 struct App {
+    chrome: window_chrome::State,
+    compact_preview: bool,
     client: Option<Client>,
     data_dir: PathBuf,
     connecting: bool,
@@ -303,9 +304,14 @@ struct App {
 
 impl App {
     fn new(data_dir: PathBuf) -> (Self, Task<Message>) {
-        let task = Self::connect(data_dir.clone());
+        let task = Task::batch([
+            Self::connect(data_dir.clone()),
+            window_chrome::State::initial_task().map(Message::WindowChrome),
+        ]);
         (
             Self {
+                chrome: window_chrome::State::default(),
+                compact_preview: false,
                 client: None,
                 data_dir,
                 connecting: true,
@@ -413,15 +419,40 @@ impl App {
         ])
     }
     fn subscription(&self) -> Subscription<Message> {
-        if self.active.is_some() {
+        let jobs = if self.active.is_some() {
             iced::time::every(Duration::from_millis(650)).map(|_| Message::Tick)
         } else {
             Subscription::none()
-        }
+        };
+        Subscription::batch([
+            window_chrome::State::subscription().map(Message::WindowChrome),
+            jobs,
+        ])
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::WindowChrome(message) => {
+                let task = self.chrome.update(message).map(Message::WindowChrome);
+                if !self.compact_layout() && self.compact_preview {
+                    self.compact_preview = false;
+                    self.reset_preview();
+                }
+                return task;
+            }
+            Message::ToggleCompactPreview => {
+                if !self.compact_layout() {
+                    return Task::none();
+                }
+                self.compact_preview = !self.compact_preview;
+                if self.compact_preview {
+                    // An explicit compact preview stays selected while the
+                    // pointer travels from the hidden chart to the list.
+                    self.preview_pane_hover = true;
+                } else {
+                    self.reset_preview();
+                }
+            }
             Message::Overview => {
                 self.overview = true;
                 self.reset_preview();
@@ -461,13 +492,15 @@ impl App {
                 if epoch == self.preview_epoch
                     && self.chart_target.is_none()
                     && !self.preview_pane_hover
+                    && !(self.compact_layout() && self.compact_preview)
                 {
                     self.reset_preview();
                 }
             }
             Message::PreviewPane(entered) => {
-                self.preview_pane_hover = entered;
-                if !entered && self.chart_target.is_none() {
+                self.preview_pane_hover =
+                    entered || (self.compact_layout() && self.compact_preview);
+                if !self.preview_pane_hover && self.chart_target.is_none() {
                     self.reset_preview();
                 }
             }
@@ -1294,20 +1327,25 @@ impl App {
 
     fn review_view<'a>(&'a self, plan: &'a ReviewPlan) -> Element<'a, Message> {
         let permanent = plan.mode == CleanupMode::Permanent;
+        let compact = self.compact_layout() || self.chrome.size.height < 760.0;
+        let dimensions = self.modal_dimensions(760.0, 680.0);
         let mut targets = Column::new().spacing(9);
         for node in &plan.targets {
             targets = targets.push(
                 container(
                     column![
                         row![
-                            text(crop(&node.name, 64)).size(13),
-                            Space::new().width(Length::Fill),
+                            text(crop(&node.name, 64)).size(13).width(Length::Fill),
                             text(format!("文件逻辑大小 {}", bytes(node.logical_bytes)))
                                 .size(12)
                                 .color(MUTED)
                         ]
                         .spacing(12),
-                        text(&node.path.display).size(11).color(MUTED)
+                        text(&node.path.display)
+                            .size(11)
+                            .width(Length::Fill)
+                            .wrapping(text::Wrapping::Glyph)
+                            .color(MUTED)
                     ]
                     .spacing(6),
                 )
@@ -1335,7 +1373,13 @@ impl App {
                     .or_else(|| node.get("path").and_then(Value::as_str))
                     .or_else(|| node.get("name").and_then(Value::as_str))
                     .unwrap_or("清单成员");
-                detail = detail.push(text(path).size(10).color(MUTED));
+                detail = detail.push(
+                    text(path)
+                        .size(10)
+                        .width(Length::Fill)
+                        .wrapping(text::Wrapping::Glyph)
+                        .color(MUTED),
+                );
             }
         }
         if plan.next_cursor.is_some() {
@@ -1346,26 +1390,27 @@ impl App {
                     .on_press(Message::MorePlan),
             );
         }
-        let mut body = column![
-            row![
-                text(if permanent {
-                    "确认永久删除"
-                } else {
-                    "确认移入回收站"
-                })
-                .size(24),
-                Space::new().width(Length::Fill),
-                button("×")
-                    .style(quiet_button)
-                    .on_press_maybe((!self.busy).then_some(Message::DismissReview))
-            ]
-            .align_y(Alignment::Center),
+        let heading = row![
+            text(if permanent {
+                "确认永久删除"
+            } else {
+                "确认移入回收站"
+            })
+            .size(if compact { 19 } else { 24 }),
+            Space::new().width(Length::Fill),
+            button("×")
+                .style(quiet_button)
+                .on_press_maybe((!self.busy).then_some(Message::DismissReview))
+        ]
+        .align_y(Alignment::Center);
+        let mut content = column![
             text(if permanent {
                 "这些项目将永久删除，无法通过回收站恢复。请核对下面的路径与操作方式。"
             } else {
                 "下面的项目将移入系统回收站。回收站占用仍可能保留，实际可用容量以清理后观测为准。"
             })
-            .size(13)
+            .size(if compact { 11 } else { 13 })
+            .width(Length::Fill)
             .color(if permanent { WARNING } else { MUTED }),
             row![
                 pill(
@@ -1384,9 +1429,9 @@ impl App {
                 .size(13),
                 Space::new().width(Length::Fill)
             ]
-            .spacing(14)
+            .spacing(if compact { 8 } else { 14 })
             .align_y(Alignment::Center),
-            scrollable(detail).height(Length::Fill),
+            detail,
             text(format!(
                 "计划有效期至 {} · 文件发生变化时服务会跳过并报告",
                 timestamp(plan.expires_at)
@@ -1394,59 +1439,61 @@ impl App {
             .size(10)
             .color(MUTED),
         ]
-        .spacing(18);
+        .spacing(if compact { 7 } else { 18 });
         if permanent {
-            body = body.push(
+            content = content.push(
                 text_input("输入「永久删除」确认此操作方式", &self.confirm_text)
                     .on_input(Message::ConfirmText)
-                    .padding(13)
+                    .padding(if compact { 9 } else { 13 })
                     .size(13),
             );
         }
         if let Some(banner) = &self.banner {
-            body = body.push(text(banner).size(11).color(WARNING));
+            content = content.push(text(banner).size(11).color(WARNING));
         }
         let enabled = !self.busy
             && ohmydisk_core::model::now_ms() <= plan.expires_at
             && !plan.targets.is_empty()
             && (!permanent || self.confirm_text == "永久删除");
-        body = body.push(
-            row![
-                button(text("返回检查").size(13))
-                    .padding([12, 18])
-                    .style(quiet_button)
-                    .on_press_maybe((!self.busy).then_some(Message::DismissReview)),
-                Space::new().width(Length::Fill),
-                button(
-                    text(if self.busy {
-                        "正在提交…"
-                    } else if permanent {
-                        "永久删除这些项目"
-                    } else {
-                        "确认移入回收站"
-                    })
-                    .size(13)
-                )
-                .padding([12, 20])
-                .style(if permanent {
-                    button::danger
+        let actions = row![
+            button(text("返回检查").size(13))
+                .padding(if compact { [9, 12] } else { [12, 18] })
+                .style(quiet_button)
+                .on_press_maybe((!self.busy).then_some(Message::DismissReview)),
+            Space::new().width(Length::Fill),
+            button(
+                text(if self.busy {
+                    "正在提交…"
+                } else if permanent {
+                    "永久删除这些项目"
                 } else {
-                    accent_button
+                    "确认移入回收站"
                 })
-                .on_press_maybe(enabled.then_some(Message::Execute))
-            ]
-            .spacing(12),
-        );
+                .size(13)
+            )
+            .padding(if compact { [9, 12] } else { [12, 20] })
+            .style(if permanent {
+                button::danger
+            } else {
+                accent_button
+            })
+            .on_press_maybe(enabled.then_some(Message::Execute))
+        ]
+        .spacing(12);
+        let body = column![heading, scrollable(content).height(Length::Fill), actions]
+            .spacing(if compact { 7 } else { 18 });
         container(body)
-            .padding(30)
-            .width(760)
-            .height(680)
+            .padding(if compact { 12 } else { 30 })
+            .width(dimensions.width)
+            .height(dimensions.height)
             .style(|_| rounded_style(PANEL, 20.0))
             .into()
     }
 
     fn result_view(&self) -> Element<'_, Message> {
         let result = self.result.as_ref().unwrap();
+        let compact = self.compact_layout() || self.chrome.size.height < 760.0;
+        let dimensions = self.modal_dimensions(800.0, 650.0);
         let succeeded = self
             .result_items
             .iter()
@@ -1465,7 +1512,10 @@ impl App {
             let mut details = column![
                 row![
                     pill(label, color),
-                    text(&item.path).size(11).width(Length::Fill)
+                    text(&item.path)
+                        .size(11)
+                        .width(Length::Fill)
+                        .wrapping(text::Wrapping::Glyph)
                 ]
                 .spacing(10)
                 .align_y(Alignment::Center)
@@ -1503,15 +1553,15 @@ impl App {
             (Some(a), Some(b)) => format!("磁盘可用容量：{} → {}（系统观测）", bytes(a), bytes(b)),
             _ => "回收站操作不等于空间已释放；实际容量由系统重新观测。".into(),
         };
-        let body = column![
-            row![
-                text("清理作业结果").size(24),
-                Space::new().width(Length::Fill),
-                button("×")
-                    .style(quiet_button)
-                    .on_press(Message::DismissResults)
-            ]
-            .align_y(Alignment::Center),
+        let heading = row![
+            text("清理作业结果").size(if compact { 19 } else { 24 }),
+            Space::new().width(Length::Fill),
+            button("×")
+                .style(quiet_button)
+                .on_press(Message::DismissResults)
+        ]
+        .align_y(Alignment::Center);
+        let content = column![
             text(format!(
                 "当前已载入 {} 项结果，{} 项已完成。每项状态由本地服务记录。",
                 self.result_items.len(),
@@ -1520,7 +1570,7 @@ impl App {
             .size(13)
             .color(MUTED),
             text(observation).size(11).color(MUTED),
-            scrollable(list).height(Length::Fill),
+            list,
             text(
                 if self
                     .active
@@ -1534,16 +1584,21 @@ impl App {
             )
             .size(11)
             .color(ACCENT),
+        ]
+        .spacing(if compact { 8 } else { 20 });
+        let body = column![
+            heading,
+            scrollable(content).height(Length::Fill),
             button(text("返回空间分析").size(13))
                 .padding([12, 20])
                 .style(accent_button)
                 .on_press(Message::DismissResults),
         ]
-        .spacing(20);
+        .spacing(if compact { 8 } else { 20 });
         container(body)
-            .padding(30)
-            .width(800)
-            .height(650)
+            .padding(if compact { 12 } else { 30 })
+            .width(dimensions.width)
+            .height(dimensions.height)
             .style(|_| rounded_style(PANEL, 20.0))
             .into()
     }
