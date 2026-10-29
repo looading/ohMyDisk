@@ -93,9 +93,9 @@ compact_preview: bool,
   baseline to confirm this window change does not alter measurement behavior.
 - [x] Review event routing, modal hit behavior, native platform configuration and
   sizing constraints independently.
-- [ ] Update the existing PR description for the final window feature scope;
+- [x] Update the existing PR description for the final window feature scope;
   run native Windows x64, macOS ARM and Intel CI and verify artifacts.
-- [ ] Finish isolated unlocked-Mac gesture and confirmation/back acceptance.
+- [x] Finish isolated unlocked-Mac gesture and confirmation/back acceptance.
   Record unavailable native interaction coverage as such, not as a pass.
 
 The approved design is
@@ -125,3 +125,18 @@ Unsafe boundaries document ABI, main-thread access and retained lifetimes.
 Bounds/flipped/invalid-viewport tests supplement the existing gesture tests.
 The native correction must pass actual before/after window bounds, followed by
 full tests, lint, MCP and native CI.
+
+## Final acceptance record
+
+The corrected code at `f1cd809` passed 148 local Rust tests, Clippy and MCP smoke.
+Its Windows x64, macOS ARM and Intel CI jobs all passed; all three packages were
+downloaded and checksum/architecture/version/company-marker checked.
+
+The local-release native suite at `ba76604` exercised integrated controls,
+double-click zoom/restore, resize to 500x480, compact chart/list and permanent
+neutral input/clear/back plus trash review/back. No cleanup was executed.
+After the Mac original-event correction, automated drag remained inconclusive,
+including an unmodified native-titlebar control. The user then explicitly
+confirmed that the test window followed a real mouse drag. This is manual
+confirmation, not a quantitative position trace. Windows gestures were not
+manually exercised. See [acceptance details](../../verification/2026-10-29-window-chrome.md).
