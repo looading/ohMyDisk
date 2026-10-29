@@ -34,10 +34,10 @@ the concurrent scanner work in the shared checkout.
   `cargo test --workspace --locked`,
   `cargo clippy --workspace --all-targets --locked`, and
   `python3 -m unittest discover -s tests -p 'test_*.py' -v`.
-- [ ] Root/team: build/package the native Mac app, verify plist/icon/signature,
-  then run native Windows/MSVC, Mac ARM and Mac Intel CI. Inspect downloaded
-  archive resources and checksums; document exactly what was verified.
-- [ ] Root: publish only owned icon/build/package changes to the existing PR,
+- [x] Root/team: build/package the native Mac app, verify plist/icon/signature,
+  and run native Windows/MSVC, Mac ARM and Mac Intel CI. Validate the local Mac
+  ZIP and record the independent CI-archive download boundary separately.
+- [x] Root: publish only owned icon/build/package changes to the existing PR,
   preserving the concurrent backend diff and keeping the PR draft for that work.
 
 ## Local verification
@@ -52,3 +52,11 @@ alpha and opaque colors exactly; their semitransparent RGB quantization is at
 most one channel level and their premultiplied pixels match exactly. Verification
 reads those ARGB blocks directly: `iconutil --convert iconset` is lossy for them,
 as also documented by the [icon tool maintainers](https://github.com/electron-userland/electron-builder-binaries/blob/master/packages/icons/CHANGELOG.md#123).
+
+All three platform jobs passed for `a00f998` in
+[run 40907202426](https://github.com/looading/ohMyDisk/actions/runs/40907202426).
+The Windows package step checked the actual RC/linker output. The local Mac ZIP
+also passed checksum, archive integrity, bundle declaration and exact ICNS-byte
+checks. Independent re-download of CI ZIPs was bandwidth-limited; do not count
+those post-download checks as completed. Native CI's own checks and uploaded
+artifacts remain available through the workflow run.
