@@ -27,12 +27,18 @@ const RESIZE_EDGE: f32 = 6.0;
 const RESIZE_CORNER: f32 = 12.0;
 const DOUBLE_PRESS_INTERVAL: Duration = Duration::from_millis(300);
 const DOUBLE_PRESS_DISTANCE: f32 = 6.0;
+const ICON_PIXELS: &[u8; 64 * 64 * 4] =
+    include_bytes!("../../../../assets/icons/omd-window-64.rgba");
 
 pub(super) fn settings() -> window::Settings {
     let settings = window::Settings {
         size: INITIAL_SIZE,
         min_size: Some(MINIMUM_SIZE),
         resizable: true,
+        icon: Some(
+            window::icon::from_rgba(ICON_PIXELS.to_vec(), 64, 64)
+                .expect("the embedded 64x64 RGBA icon has a compile-time checked byte count"),
+        ),
         ..window::Settings::default()
     };
     #[cfg(any(target_os = "macos", target_os = "windows"))]
