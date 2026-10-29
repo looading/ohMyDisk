@@ -234,6 +234,12 @@ pub struct Job {
     pub kind: String,
     pub state: String,
     pub created_at: u64,
+    /// Monotonic scan duration, including queueing, saving, and publication.
+    /// Active jobs report a live value; terminal jobs retain their saved total.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<u64>,
     pub progress: ScanProgress,
     pub result: serde_json::Value,
     pub error: Option<AppError>,
@@ -253,4 +259,31 @@ pub struct Query {
     pub modified_before: Option<u64>,
     pub cursor: Option<String>,
     pub limit: Option<usize>,
+}
+
+#[cfg(test)]
+mod job_timing_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn legacy_jobs_keep_unknown_timing_and_new_totals_round_trip() {
+        let mut job: Job = serde_json::from_value(json!({
+            "id": "legacy", "kind": "scan", "state": "completed",
+            "created_at": 100, "progress": ScanProgress::default(),
+            "result": {}, "error": null,
+        }))
+        .unwrap();
+        assert_eq!(job.elapsed_ms, None);
+        assert_eq!(job.finished_at, None);
+        let legacy = serde_json::to_value(&job).unwrap();
+        assert!(legacy.get("elapsed_ms").is_none());
+        assert!(legacy.get("finished_at").is_none());
+
+        job.elapsed_ms = Some(12_345);
+        job.finished_at = Some(12_445);
+        let saved: Job = serde_json::from_str(&serde_json::to_string(&job).unwrap()).unwrap();
+        assert_eq!(saved.elapsed_ms, Some(12_345));
+        assert_eq!(saved.finished_at, Some(12_445));
+    }
 }

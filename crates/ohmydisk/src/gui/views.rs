@@ -421,8 +421,10 @@ impl App {
     pub(super) fn header(&self) -> Element<'_, Message> {
         let compact = self.compact_layout();
         let mut title = row![
-            text("◉").size(20).color(GREEN),
-            text("ohMyDisk").size(if compact { 16 } else { 18 })
+            text(APP_NAME).size(if compact { 16 } else { 18 }),
+            text(TAGLINE)
+                .size(if compact { 11 } else { 13 })
+                .color(MUTED)
         ]
         .spacing(8)
         .align_y(Alignment::Center);
@@ -639,11 +641,16 @@ impl App {
                     .size(12)
                     .width(Length::Fill),
                 text(if compact {
-                    scan_size_summary(scan)
-                } else {
                     format!(
                         "{} · {}",
                         scan_size_summary(scan),
+                        self.scan_time_label(scan)
+                    )
+                } else {
+                    format!(
+                        "{} · {} · {}",
+                        scan_size_summary(scan),
+                        self.scan_time_label(scan),
                         timestamp(scan.created_at)
                     )
                 })
@@ -775,7 +782,21 @@ impl App {
         container(
             row![
                 column![
-                    text(job_label(&job.work)).size(12).color(GREEN),
+                    row![
+                        text(job_label(&job.work)).size(12).color(GREEN),
+                        Space::new().width(Length::Fill),
+                        text(if matches!(job.work, Work::Scan | Work::Refresh) {
+                            format!(
+                                "已用时 {}",
+                                scan_clock::format_duration(job.clock.elapsed_ms())
+                            )
+                        } else {
+                            String::new()
+                        })
+                        .size(12)
+                        .color(WHITE)
+                    ]
+                    .align_y(Alignment::Center),
                     text(format!("{} · {}", state_label(&job.state), job.progress))
                         .size(11)
                         .color(MUTED)
@@ -992,15 +1013,20 @@ impl App {
         let compact = self.compact_layout();
         let short = self.short_layout();
         let title = column![
-            text(crop(
-                self.location
-                    .as_ref()
-                    .map(|location| location.name.as_str())
-                    .unwrap_or("空间分析"),
-                if compact { 24 } else { 38 }
-            ))
-            .size(if compact { 18 } else { 22 })
-            .width(Length::Fill),
+            row![
+                text(crop(
+                    self.location
+                        .as_ref()
+                        .map(|location| location.name.as_str())
+                        .unwrap_or("空间分析"),
+                    if compact { 24 } else { 38 }
+                ))
+                .size(if compact { 18 } else { 22 })
+                .width(Length::Fill),
+                text(self.scan_time_label(scan)).size(10).color(MUTED)
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
             text(if compact || short {
                 header_metric
             } else if self.capacity().is_none() {
@@ -1614,6 +1640,24 @@ fn space_description(target: &sunburst::Target) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_duration_survives_summary_roundtrip_without_inventing_legacy_totals() {
+        let legacy = json!({
+            "scan_id":"history", "root_id":"0", "root_path":{
+                "display":"/fixture", "encoded":"L2ZpeHR1cmU="
+            }, "complete":true, "created_at":10, "state":"completed"
+        });
+        let unknown: ScanSummary = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(scan_time_summary(&unknown), "总耗时未记录");
+        let mut timed = legacy;
+        timed["elapsed_ms"] = json!(72_340);
+        let completed: ScanSummary = serde_json::from_value(timed.clone()).unwrap();
+        assert_eq!(scan_time_summary(&completed), "总耗时 1 分 12 秒");
+        timed["state"] = json!("running");
+        let running: ScanSummary = serde_json::from_value(timed).unwrap();
+        assert_eq!(scan_time_summary(&running), "已用时 1 分 12 秒");
+    }
     use ohmydisk_core::{NativePath, NodeSpace};
     #[test]
     fn collapsed_and_clamped_collectors_keep_the_summary_without_card_overflow() {

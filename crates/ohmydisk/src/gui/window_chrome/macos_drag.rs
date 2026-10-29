@@ -1,8 +1,11 @@
 //! Handle the original AppKit mouseDown without a deferred currentEvent lookup.
 //! This view owns no Rust/global window references; AppKit owns it as a subview.
+//! Native caption buttons share the rendered header's vertical center.
 use super::{HEADER_HEIGHT, MACOS_TRAFFIC_LIGHT_WIDTH, PICK_FOLDER_BUTTON_WIDTH};
 use objc2::{ClassType, MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained};
-use objc2_app_kit::{NSAutoresizingMaskOptions, NSEvent, NSView};
+use objc2_app_kit::{
+    NSAutoresizingMaskOptions, NSEvent, NSView, NSWindow, NSWindowButton, NSWindowStyleMask,
+};
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize};
 use raw_window_handle::RawWindowHandle;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -104,6 +107,45 @@ fn autoresizing(flipped: bool) -> NSAutoresizingMaskOptions {
         }
 }
 
+fn align_native_controls(content: &NSView, window: &NSWindow) {
+    // AppKit manages its own temporary titlebar/button layout in fullscreen.
+    // The ordinary resize/focus callback reapplies this after restoration.
+    if window.styleMask().contains(NSWindowStyleMask::FullScreen) {
+        return;
+    }
+    let bounds = content.bounds();
+    let Some(header) = drag_bounds(bounds, content.isFlipped()) else {
+        return;
+    };
+    let center = NSPoint::new(bounds.origin.x, header.origin.y + header.size.height / 2.0);
+    for kind in [
+        NSWindowButton::CloseButton,
+        NSWindowButton::MiniaturizeButton,
+        NSWindowButton::ZoomButton,
+    ] {
+        let Some(button) = window.standardWindowButton(kind) else {
+            continue;
+        };
+        // SAFETY: The retained window owns its live native button hierarchy for
+        // this synchronous main-thread callback. Retain the current superview
+        // only for this iteration; no hierarchy or ownership is changed.
+        let Some(parent) = (unsafe { button.superview() }) else {
+            continue;
+        };
+        // The winit content view and native titlebar use different coordinate
+        // systems. Converting the actual content center also handles flipped
+        // content views, nonzero bounds origins and native titlebar dimensions.
+        let target = parent.convertPoint_fromView(center, Some(content));
+        let frame = button.frame();
+        let y = target.y - frame.size.height / 2.0;
+        if y.is_finite() && y != frame.origin.y {
+            // Preserve AppKit's horizontal placement, size, target/action,
+            // accessibility and fullscreen behavior of the original buttons.
+            button.setFrameOrigin(NSPoint::new(frame.origin.x, y));
+        }
+    }
+}
+
 /// Called exclusively from iced::window::run while that window is still alive.
 /// All native objects and the borrowed raw handle remain inside this callback.
 pub(super) fn install(native: &dyn iced::window::Window) -> bool {
@@ -129,9 +171,10 @@ pub(super) fn install(native: &dyn iced::window::Window) -> bool {
     else {
         return false;
     };
-    if parent.window().is_none() {
+    let Some(window) = parent.window() else {
         return false;
-    }
+    };
+    align_native_controls(&parent, &window);
     let flipped = parent.isFlipped();
     let frame = drag_bounds(parent.bounds(), flipped);
     let subviews = parent.subviews();

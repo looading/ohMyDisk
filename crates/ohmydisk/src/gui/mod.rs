@@ -1,6 +1,7 @@
 //! Native desktop frontend. Filesystem work belongs to the shared local service;
 //! the UI only owns navigation, an uncommitted collection, and explicit approval.
 mod collector_interaction;
+mod scan_clock;
 mod space_view;
 mod sunburst;
 mod views;
@@ -38,14 +39,12 @@ const WHITE: Color = Color::from_rgb(0.90, 0.92, 0.98);
 const ACCENT: Color = Color::from_rgb(0.48, 0.50, 1.0);
 const GREEN: Color = Color::from_rgb(0.39, 0.79, 0.67);
 const WARNING: Color = Color::from_rgb(0.96, 0.69, 0.39);
+const APP_NAME: &str = "ohMyDisk";
+const TAGLINE: &str = "空间，清晰可见";
 
 pub fn run(data_dir: PathBuf) -> iced::Result {
     let mut app = iced::application(move || App::new(data_dir.clone()), App::update, App::view)
-        .title(concat!(
-            "ohMyDisk v",
-            env!("CARGO_PKG_VERSION"),
-            " · 空间，清晰可见"
-        ))
+        .title(|_: &App| format!("{APP_NAME} {TAGLINE}"))
         .subscription(App::subscription)
         .theme(Theme::Dark)
         .default_font(chinese_font())
@@ -113,6 +112,10 @@ struct ScanSummary {
     refresh_job_id: Option<String>,
     job_id: Option<String>,
     state: Option<String>,
+    #[serde(default)]
+    elapsed_ms: Option<u64>,
+    #[serde(default)]
+    started_at: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -179,6 +182,7 @@ struct ActiveJob {
     work: Work,
     state: String,
     progress: String,
+    clock: scan_clock::Clock,
 }
 
 #[derive(Clone, Debug)]
@@ -819,6 +823,7 @@ impl App {
                         work: Work::Scan,
                         state: "queued".into(),
                         progress: "等待扫描…".into(),
+                        clock: scan_clock::Clock::default(),
                     });
                 }
                 return self.reload();
@@ -841,14 +846,15 @@ impl App {
                         if let Some(active) = &mut self.active {
                             active.state = job.state.clone();
                             active.progress = format!(
-                                "{} · {} 个文件 · {} 个文件夹 · {} 秒 · {}",
+                                "{} · {} 个文件 · {} 个文件夹 · {}",
                                 phase_label(&job.progress.phase),
                                 job.progress.files,
                                 job.progress.directories,
-                                ohmydisk_core::model::now_ms().saturating_sub(job.created_at)
-                                    / 1000,
                                 crop(&job.progress.current_path, 56)
                             );
+                            active.clock.observe(job.elapsed_ms.unwrap_or_else(|| {
+                                ohmydisk_core::now_ms().saturating_sub(job.created_at)
+                            }));
                         }
                         if !terminal {
                             return Task::none();
@@ -913,6 +919,7 @@ impl App {
                             self.overview = true;
                             self.loading = false;
                             let status = scan_size_summary(&scan);
+                            let clock = clock_for_scan(&scan);
                             if let Some(id) = scan.job_id {
                                 if scan.state.as_deref().is_some_and(|state| {
                                     matches!(state, "queued" | "running" | "cancel_requested")
@@ -923,6 +930,7 @@ impl App {
                                         work: Work::Scan,
                                         state: scan.state.unwrap_or_else(|| "running".into()),
                                         progress: "已连接到后台扫描，正在读取进度…".into(),
+                                        clock,
                                     });
                                     self.banner = Some(
                                         "已接续这个后台扫描，可在此查看进度或请求停止。".into(),
@@ -953,6 +961,7 @@ impl App {
                                     work: Work::Refresh,
                                     state: "queued".into(),
                                     progress: "正在取得后台刷新状态…".into(),
+                                    clock: scan_clock::Clock::default(),
                                 });
                             }
                         }
@@ -1030,6 +1039,7 @@ impl App {
                         work: Work::Prepare(mode),
                         state: "queued".into(),
                         progress: "正在核对文件身份和完整目录清单…".into(),
+                        clock: scan_clock::Clock::default(),
                     });
                 }
             }
@@ -1091,6 +1101,7 @@ impl App {
                         work: Work::Cleanup,
                         state: "queued".into(),
                         progress: "正在逐项处理已确认的清理计划…".into(),
+                        clock: scan_clock::Clock::default(),
                     });
                 }
             }
@@ -1117,6 +1128,7 @@ impl App {
                             work: Work::Refresh,
                             state: "queued".into(),
                             progress: "清理结果已保存，正在重新扫描原位置…".into(),
+                            clock: scan_clock::Clock::default(),
                         });
                     } else if let Some(id) = string(&value, "refresh_scan_id") {
                         return Task::batch([self.open_scan(id), self.reload()]);
@@ -1170,6 +1182,17 @@ impl App {
             )
             .chain(self.collection.iter().filter(|_| collection_is_current))
             .find(|node| node.id == id)
+    }
+    fn scan_time_label(&self, scan: &ScanSummary) -> String {
+        if let Some(job) = self.active.as_ref().filter(|job| {
+            scan.job_id.as_ref() == Some(&job.id) && matches!(job.work, Work::Scan | Work::Refresh)
+        }) {
+            return format!(
+                "已用时 {}",
+                scan_clock::format_duration(job.clock.elapsed_ms())
+            );
+        }
+        scan_time_summary(scan)
     }
     fn navigate(&mut self, id: &str, record: bool) -> Task<Message> {
         let location = if let Some(node) = self.find_node(id) {
@@ -1722,6 +1745,33 @@ fn source_hint(source: &Volume) -> Option<&'static str> {
         }
     } else {
         None
+    }
+}
+
+fn clock_for_scan(scan: &ScanSummary) -> scan_clock::Clock {
+    let mut clock = scan_clock::Clock::default();
+    if let Some(elapsed) = scan.elapsed_ms.or_else(|| {
+        scan.started_at
+            .map(|start| ohmydisk_core::now_ms().saturating_sub(start))
+    }) {
+        clock.observe(elapsed);
+    }
+    clock
+}
+
+fn scan_time_summary(scan: &ScanSummary) -> String {
+    let running = matches!(
+        scan.state.as_deref(),
+        Some("queued" | "running" | "cancel_requested")
+    );
+    match scan.elapsed_ms {
+        Some(elapsed) => format!(
+            "{} {}",
+            if running { "已用时" } else { "总耗时" },
+            scan_clock::format_duration(elapsed)
+        ),
+        None if running => "正在计时".into(),
+        None => "总耗时未记录".into(),
     }
 }
 

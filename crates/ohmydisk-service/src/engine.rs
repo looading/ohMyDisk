@@ -49,6 +49,7 @@ pub struct Engine {
     mutations: Mutex<()>,
     cleanup: Mutex<()>,
     cancellations: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    scan_clocks: Mutex<HashMap<String, Instant>>,
     active: AtomicUsize,
     workers: Arc<tokio::sync::Semaphore>,
     snapshots: SnapshotCache,
@@ -68,6 +69,7 @@ impl Engine {
             mutations: Mutex::new(()),
             cleanup: Mutex::new(()),
             cancellations: Mutex::new(HashMap::new()),
+            scan_clocks: Mutex::new(HashMap::new()),
             active: AtomicUsize::new(0),
             workers: Arc::new(tokio::sync::Semaphore::new(2)),
             snapshots: SnapshotCache::default(),
@@ -129,11 +131,12 @@ impl Engine {
                     if let Some(cancel) = self.cancellations.lock().map_err(poison)?.get(id) {
                         cancel.store(true, Ordering::SeqCst);
                     }
-                    job = self.store.update::<Job>("job", id, |j| {
+                    self.store.update::<Job>("job", id, |j| {
                         if active_state(&j.state) {
                             j.state = "cancel_requested".into();
                         }
                     })?;
+                    job = self.job(id)?;
                 }
                 Ok(json!(job))
             }
@@ -150,7 +153,17 @@ impl Engine {
         }
     }
     fn job(&self, id: &str) -> Result<Job, AppError> {
-        self.store.get("job", id)?.ok_or_else(|| missing("job"))
+        let elapsed_ms = self
+            .scan_clocks
+            .lock()
+            .map_err(poison)?
+            .get(id)
+            .map(|started| duration_ms(started.elapsed()));
+        let mut job: Job = self.store.get("job", id)?.ok_or_else(|| missing("job"))?;
+        if job.kind == "scan" && active_state(&job.state) && elapsed_ms.is_some() {
+            job.elapsed_ms = elapsed_ms;
+        }
+        Ok(job)
     }
     fn scan_record(&self, id: &str) -> Result<ScanRecord, AppError> {
         self.store.get("scan", id)?.ok_or_else(|| missing("scan"))
@@ -233,7 +246,7 @@ impl Engine {
     fn scan_summary(&self, record: &ScanRecord) -> Result<Value, AppError> {
         let job = self.job(&record.job_id)?;
         Ok(
-            json!({"scan_id":record.scan_id,"snapshot_id":record.snapshot_id,"root_id":record.root_id,"root_path":record.root_path,"logical_bytes":record.logical_bytes,"complete":record.complete,"created_at":record.created_at,"known_stale":record.known_stale,"needs_rescan":record.needs_rescan,"refresh_job_id":record.refresh_job_id,"job_id":record.job_id,"state":job.state,"issue_count":record.issue_count,"size_metric":"logical_bytes","captured_at":record.created_at,"space_accounting":record.space_accounting,"default_display_metric":"attributed"}),
+            json!({"scan_id":record.scan_id,"snapshot_id":record.snapshot_id,"root_id":record.root_id,"root_path":record.root_path,"logical_bytes":record.logical_bytes,"complete":record.complete,"created_at":record.created_at,"started_at":job.created_at,"elapsed_ms":job.elapsed_ms,"finished_at":job.finished_at,"known_stale":record.known_stale,"needs_rescan":record.needs_rescan,"refresh_job_id":record.refresh_job_id,"job_id":record.job_id,"state":job.state,"issue_count":record.issue_count,"size_metric":"logical_bytes","captured_at":record.created_at,"space_accounting":record.space_accounting,"default_display_metric":"attributed"}),
         )
     }
     fn start_scan(self: &Arc<Self>, args: Value) -> Result<Value, AppError> {
@@ -679,6 +692,10 @@ impl Engine {
     where
         F: FnOnce(Arc<Self>, String, Arc<AtomicBool>) -> Result<String, AppError> + Send + 'static,
     {
+        let started = Instant::now();
+        if let Ok(mut clocks) = self.scan_clocks.lock() {
+            clocks.insert(job_id.clone(), started);
+        }
         let cancel = Arc::new(AtomicBool::new(false));
         if let Ok(mut cancellations) = self.cancellations.lock() {
             cancellations.insert(job_id.clone(), cancel.clone());
@@ -712,14 +729,19 @@ impl Engine {
                     .store
                     .update::<Job>("job", &job_id, |j| match result {
                         Ok(state) => {
+                            finish_scan_timing(j, started);
                             j.state = state;
                             j.progress.phase = "finished".into();
                         }
                         Err(error) => {
+                            finish_scan_timing(j, started);
                             j.state = "failed".into();
                             j.error = Some(error);
                         }
                     });
+                if let Ok(mut clocks) = engine.scan_clocks.lock() {
+                    clocks.remove(&job_id);
+                }
                 if let Ok(mut cancellations) = engine.cancellations.lock() {
                     cancellations.remove(&job_id);
                 }
@@ -735,9 +757,20 @@ fn new_job(id: &str, kind: &str, result: Value) -> Job {
         kind: kind.into(),
         state: "queued".into(),
         created_at: now_ms(),
+        elapsed_ms: None,
+        finished_at: None,
         progress: ScanProgress::default(),
         result,
         error: None,
+    }
+}
+fn duration_ms(duration: Duration) -> u64 {
+    duration.as_millis().try_into().unwrap_or(u64::MAX)
+}
+fn finish_scan_timing(job: &mut Job, started: Instant) {
+    if job.kind == "scan" {
+        job.elapsed_ms = Some(duration_ms(started.elapsed()));
+        job.finished_at = Some(now_ms());
     }
 }
 fn active_state(state: &str) -> bool {
