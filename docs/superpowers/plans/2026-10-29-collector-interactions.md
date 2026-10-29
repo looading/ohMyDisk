@@ -92,10 +92,11 @@ collector_panel: collector_interaction::PanelState,
 
 - [x] Run formatting, workspace Rust tests, Clippy, Python checks and release MCP.
 - [x] Review event capture/order, bounds, controller lifetime and plan invariants.
-- [ ] Publish owned GUI commits to the existing PR, preserving concurrent scan
+- [x] Publish owned GUI commits to the existing PR, preserving concurrent scan
   work. Run native Windows/macOS CI and verify packages.
-- [ ] Native fixture checks: chart/list drag in/out, cancel, divider growth/shrink,
-  collapse restoration and 500x480. Record tool limitations without false passes.
+- [x] Native fixture checks: chart/list drag in/out, cancel, divider growth/shrink,
+  collapse restoration and 500x480. Record the minimum-size chart limitation
+  without treating control reachability as complete chart usability.
 
 ## Verification record
 
@@ -103,8 +104,10 @@ The integrated ordered-pointer code and widget regressions passed 174 Rust tests
 formatting, Clippy (with warnings), and release MCP fixture workflows. Before
 the ordered-pointer correction, local native input positively demonstrated a
 pre-hovered list-row drop (0 to 1 without navigation); chart and divider were
-not accepted as passes. The corrected version still needs native acceptance
-after the Mac unlocks.
+not accepted as passes. The subsequent unlocked run of the corrected version
+passed both direct source drags, divider growth/shrink, outside release and
+collapse restoration; see the
+[native acceptance record](../../verification/2026-10-29-collector-interactions.md).
 
 Independent review found and fixed Scrollable's document/window coordinate
 mixture. A further confirmed runtime contract was handled: iced updates a batch
@@ -125,3 +128,5 @@ Product commit `2c6de26` passed all three native workflow jobs in
 [run 40862955428](https://github.com/looading/ohMyDisk/actions/runs/40862955428):
 Windows x64, macOS Apple Silicon and macOS Intel. Each job completed workspace
 tests, historical benchmark smoke, MCP/native recycle-bin smoke, and packaging.
+The following test-only revision `f4a899b` also passed all three jobs in
+[run 40864379398](https://github.com/looading/ohMyDisk/actions/runs/40864379398).
