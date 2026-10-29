@@ -177,7 +177,7 @@ separately. Timing comparisons are reported only after semantic checks pass.
 
 ## Verification record (2026-10-29)
 
-Local frozen source: 132 Rust tests and 11 Python tests passed; formatting and
+Local frozen source: 136 Rust tests and 11 Python tests passed; formatting and
 Clippy passed with existing lint warnings. Final release MCP smoke passed both
 auto and supervised modes, including fixture-only native trash/permanent
 cleanup, metric cursors and persisted occupancy reconciliation. The attributed
@@ -189,3 +189,8 @@ A final GUI regression fix binds a one-shot expiry wakeup to each plan ID and
 rejects expired Execute events locally while retaining the service guard. Its
 red/green test preserves the selection and ignores stale plan timers. Packaging
 also carries the README screenshot into each distribution.
+
+The MCP adapter now rejects nonlogical metric responses without an exact metric
+echo. Four regression tests and an isolated mixed-version process smoke verified
+that a new adapter with the frozen v0.1.2 backend keeps logical queries compatible
+and returns `backend_upgrade_required` for attributed/allocated requests.

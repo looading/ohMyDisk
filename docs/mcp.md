@@ -197,6 +197,8 @@ R：共享、系统及未归属空间
 
 旧 JSON 和压缩快照可以继续读取。没有新测量字段的快照仍支持原逻辑查询；显式请求 attributed 会返回 `measurement_required`，GUI 会提示重扫。`list_sources` 中没有 `space_observation` 的旧兼容容量字段只能用于详情，不能充当一次成功的原生容量观测。
 
+新版 MCP 适配器可以连接已经运行的旧后台。明确请求 `allocated` 或 `attributed` 时，适配器要求后台回包确认同一 `size_metric`；旧后台忽略新参数或返回其他口径时，工具返回 `backend_upgrade_required`，不会把逻辑查询当作成功的占用查询。省略口径或明确请求 `logical` 仍保持旧兼容。应用不会为此停止正在运行的后台或作业；可在原作业结束后更新并重启后台。
+
 ### macOS 扫描入口
 
 `list_sources` 的每项代表一个挂载入口，不能将所有项的容量简单相加。macOS 的 `/` 与 `/System/Volumes/Data` 提供不同入口，系统与数据卷共享 APFS 容器空间。它们的文件系统命名空间标识 `id` 可以相同，通过 `mount_path` 区分入口，启动扫描时传入该路径。文件系统可见容量也不等同于整块物理 SSD 的硬件容量。
