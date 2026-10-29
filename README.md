@@ -1,8 +1,8 @@
-# ohMyDisk
+# OhMyDisk
 
 [![Build and packages](https://github.com/looading/ohMyDisk/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/looading/ohMyDisk/actions/workflows/ci.yml)
 
-ohMyDisk 使用 Rust 和 iced 分析本地磁盘空间，提供旭日图、按大小排列的文件列表与明确的清理计划。GUI 和 MCP 共用按需启动的本地服务，Codex 等 agent 可以在 GUI 未打开时使用扫描与清理能力。
+OhMyDisk 使用 Rust 和 iced 分析本地磁盘空间，提供旭日图、按大小排列的文件列表与明确的清理计划。GUI 和 MCP 共用按需启动的本地服务，Codex 等 agent 可以在 GUI 未打开时使用扫描与清理能力。
 
 ## 下载
 
@@ -10,11 +10,11 @@ ohMyDisk 使用 Rust 和 iced 分析本地磁盘空间，提供旭日图、按�
 
 | 平台 | 产物 |
 |---|---|
-| Windows x64 | [ohMyDisk-windows-x86_64.zip](https://github.com/looading/ohMyDisk/releases/latest/download/ohMyDisk-windows-x86_64.zip) |
-| macOS Apple Silicon | [ohMyDisk-macos-aarch64.zip](https://github.com/looading/ohMyDisk/releases/latest/download/ohMyDisk-macos-aarch64.zip) |
-| macOS Intel | [ohMyDisk-macos-x86_64.zip](https://github.com/looading/ohMyDisk/releases/latest/download/ohMyDisk-macos-x86_64.zip) |
+| Windows x64 | [OhMyDisk-windows-x86_64.zip](https://github.com/looading/ohMyDisk/releases/latest/download/OhMyDisk-windows-x86_64.zip) |
+| macOS Apple Silicon | [OhMyDisk-macos-aarch64.zip](https://github.com/looading/ohMyDisk/releases/latest/download/OhMyDisk-macos-aarch64.zip) |
+| macOS Intel | [OhMyDisk-macos-x86_64.zip](https://github.com/looading/ohMyDisk/releases/latest/download/OhMyDisk-macos-x86_64.zip) |
 
-普通分支构建也可以从 [Actions](https://github.com/looading/ohMyDisk/actions) 对应运行的 Artifacts 下载。macOS 解压后打开包内的 `ohMyDisk.app`，Windows 运行 `ohmydisk.exe`。
+普通分支构建也可以从 [Actions](https://github.com/looading/ohMyDisk/actions) 对应运行的 Artifacts 下载。macOS 解压后打开包内的 `OhMyDisk.app`，Windows 运行 `ohmydisk.exe`。
 
 ## 运行
 

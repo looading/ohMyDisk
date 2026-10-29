@@ -12,10 +12,10 @@ fn main() {
     // Version fields inherit the workspace package version through Cargo.
     winresource::WindowsResource::new()
         .set_icon("../../assets/icons/omd.ico")
-        .set("ProductName", "ohMyDisk")
-        .set("FileDescription", "ohMyDisk disk space analyzer")
+        .set("ProductName", "OhMyDisk")
+        .set("FileDescription", "OhMyDisk disk space analyzer")
         .set("InternalName", "ohmydisk")
         .set("OriginalFilename", "ohmydisk.exe")
         .compile()
-        .expect("failed to compile the ohMyDisk Windows icon and version resources");
+        .expect("failed to compile the OhMyDisk Windows icon and version resources");
 }

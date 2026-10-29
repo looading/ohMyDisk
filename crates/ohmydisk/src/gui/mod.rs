@@ -39,7 +39,7 @@ const WHITE: Color = Color::from_rgb(0.90, 0.92, 0.98);
 const ACCENT: Color = Color::from_rgb(0.48, 0.50, 1.0);
 const GREEN: Color = Color::from_rgb(0.39, 0.79, 0.67);
 const WARNING: Color = Color::from_rgb(0.96, 0.69, 0.39);
-const APP_NAME: &str = "ohMyDisk";
+const APP_NAME: &str = "OhMyDisk";
 const TAGLINE: &str = "空间，清晰可见";
 
 pub fn run(data_dir: PathBuf) -> iced::Result {

@@ -20,7 +20,7 @@ static REPORTED_SETUP_ERRORS: AtomicU8 = AtomicU8::new(0);
 
 fn report_setup_once(flag: u8, message: &str) {
     if REPORTED_SETUP_ERRORS.fetch_or(flag, Ordering::Relaxed) & flag == 0 {
-        eprintln!("ohMyDisk window chrome: {message}");
+        eprintln!("OhMyDisk window chrome: {message}");
     }
 }
 

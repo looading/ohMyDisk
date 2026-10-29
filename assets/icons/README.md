@@ -1,6 +1,6 @@
-# ohMyDisk app icon
+# OhMyDisk app icon
 
-`omd-app-icon-v1.png` is the original design master for the ohMyDisk desktop
+`omd-app-icon-v1.png` is the original design master for the OhMyDisk desktop
 application, generated with the built-in image generation tool on 2026-10-29.
 
 - 1254 × 1254 pixels, RGBA PNG with genuine transparency outside the tile.

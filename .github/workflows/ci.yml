@@ -33,17 +33,17 @@ jobs:
         include:
           - runner: windows-2022
             target: x86_64-pc-windows-msvc
-            artifact: ohMyDisk-windows-x86_64
+            artifact: OhMyDisk-windows-x86_64
             binary-suffix: .exe
             service-mode: supervised
           - runner: macos-15
             target: aarch64-apple-darwin
-            artifact: ohMyDisk-macos-aarch64
+            artifact: OhMyDisk-macos-aarch64
             binary-suffix: ""
             service-mode: auto
           - runner: macos-15-intel
             target: x86_64-apple-darwin
-            artifact: ohMyDisk-macos-x86_64
+            artifact: OhMyDisk-macos-x86_64
             binary-suffix: ""
             service-mode: auto
     runs-on: ${{ matrix.runner }}
@@ -87,6 +87,16 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_*.py' -v
       - name: Build release executable
         run: cargo build --locked --release -p ohmydisk --target "${{ matrix.target }}"
+      - name: Verify Windows product display name
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $binary = (Resolve-Path "target/${{ matrix.target }}/release/ohmydisk.exe").Path
+          $version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($binary)
+          if ($version.ProductName -cne "OhMyDisk" -or $version.FileDescription -cne "OhMyDisk disk space analyzer") {
+            throw "Windows executable product branding does not match OhMyDisk"
+          }
+          Write-Host "Verified Windows product name: $($version.ProductName)"
       - name: Build scan benchmark runner
         run: cargo build --locked --release -p ohmydisk-platform --example scan-bench --target "${{ matrix.target }}"
       - name: Smoke test benchmark correctness and historical snapshot loading
@@ -156,7 +166,7 @@ jobs:
       - name: Download tested packages
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          pattern: ohMyDisk-*
+          pattern: OhMyDisk-*
           merge-multiple: true
           path: dist
       - name: Verify complete release assets and checksums
@@ -165,7 +175,7 @@ jobs:
           import hashlib
           from pathlib import Path
           expected = {
-              f"ohMyDisk-{target}.zip"
+              f"OhMyDisk-{target}.zip"
               for target in ("windows-x86_64", "macos-aarch64", "macos-x86_64")
           }
           dist = Path("dist")
@@ -193,6 +203,6 @@ jobs:
               release_options+=(--prerelease)
             fi
             gh release create "$RELEASE_TAG" dist/*.zip dist/*.zip.sha256 \
-              --repo "$GITHUB_REPOSITORY" --verify-tag --title "ohMyDisk $RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" --verify-tag --title "OhMyDisk $RELEASE_TAG" \
               --generate-notes "${release_options[@]}"
           fi

@@ -220,7 +220,7 @@ def package(root, *, debug=False, skip_build=False, target=None):
 
     version = workspace_version(root)
     dist = root / "dist"
-    name = f"ohMyDisk-{os_label}-{architecture}"
+    name = f"OhMyDisk-{os_label}-{architecture}"
     folder = dist / name
     if folder.exists():
         shutil.rmtree(folder)
@@ -233,7 +233,7 @@ def package(root, *, debug=False, skip_build=False, target=None):
         shutil.copy2(root / "LICENSE", folder / "LICENSE")
 
     if system == "Darwin":
-        contents = folder / "ohMyDisk.app/Contents"
+        contents = folder / "OhMyDisk.app/Contents"
         (contents / "MacOS").mkdir(parents=True)
         (contents / "Resources").mkdir()
         shutil.copy2(binary, contents / "MacOS/ohmydisk")
@@ -241,15 +241,15 @@ def package(root, *, debug=False, skip_build=False, target=None):
         bundle_version = version.split("-", 1)[0].split("+", 1)[0]
         with (contents / "Info.plist").open("wb") as out:
             plistlib.dump({
-                "CFBundleName": "ohMyDisk", "CFBundleDisplayName": "ohMyDisk",
+                "CFBundleName": "OhMyDisk", "CFBundleDisplayName": "OhMyDisk",
                 "CFBundleIdentifier": "app.ohmydisk.desktop", "CFBundleExecutable": "ohmydisk",
                 "CFBundleIconFile": "omd.icns",
                 "CFBundlePackageType": "APPL", "CFBundleVersion": bundle_version,
                 "CFBundleShortVersionString": bundle_version, "LSMinimumSystemVersion": "13.0",
                 "NSHighResolutionCapable": True,
-                "NSDocumentsFolderUsageDescription": "ohMyDisk scans only the folders you choose to analyze disk usage.",
-                "NSDownloadsFolderUsageDescription": "ohMyDisk analyzes selected files and folders and executes reviewed cleanup plans.",
-                "NSDesktopFolderUsageDescription": "ohMyDisk analyzes selected Desktop folders.",
+                "NSDocumentsFolderUsageDescription": "OhMyDisk scans only the folders you choose to analyze disk usage.",
+                "NSDownloadsFolderUsageDescription": "OhMyDisk analyzes selected files and folders and executes reviewed cleanup plans.",
+                "NSDesktopFolderUsageDescription": "OhMyDisk analyzes selected Desktop folders.",
             }, out)
         # Ad-hoc signing permits local launch; distribution signing/notarization is separate.
         subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(contents.parent)], check=True)
@@ -259,10 +259,14 @@ def package(root, *, debug=False, skip_build=False, target=None):
         shutil.copy2(icon, folder / "omd.ico")
 
     archive = dist / f"{name}.zip"
+    # Recreate the entry so a case-only product rename also updates its actual
+    # filename on case-insensitive macOS/Windows filesystems.
+    archive.unlink(missing_ok=True)
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
         for source in sorted(folder.rglob("*")):
             output.write(source, source.relative_to(dist))
     checksum = archive.with_suffix(".zip.sha256")
+    checksum.unlink(missing_ok=True)
     with archive.open("rb") as source:
         digest = hashlib.file_digest(source, "sha256").hexdigest()
     checksum.write_text(f"{digest}  {archive.name}\n", encoding="utf-8", newline="\n")

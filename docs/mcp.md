@@ -1,4 +1,4 @@
-# ohMyDisk MCP 接入
+# OhMyDisk MCP 接入
 
 MCP 使用本地 stdio。服务由客户端启动，共用当前用户的后台扫描与清理服务，GUI 可以关闭。可执行文件不向标准输出写入协议以外的日志。
 
@@ -28,7 +28,7 @@ Windows TOML 可使用单引号保留反斜杠：
 
 ```toml
 [mcp_servers.omd]
-command = 'C:\Program Files\ohMyDisk\ohmydisk.exe'
+command = 'C:\Program Files\OhMyDisk\ohmydisk.exe'
 args = ["mcp", "--stdio"]
 ```
 
@@ -48,7 +48,7 @@ args = ["mcp", "--stdio"]
 
 ## 授权约定
 
-采用 host_confirmed：agent 宿主负责向用户展示精确清理计划，并在分发执行调用前获得批准。ohMyDisk 不再弹出第二次确认。请在宿主中分别为 omd_execute_trash 和 omd_execute_permanent 设置人工审批，永久删除必须单独批准；不要对整个服务无条件自动批准。
+采用 host_confirmed：agent 宿主负责向用户展示精确清理计划，并在分发执行调用前获得批准。OhMyDisk 不再弹出第二次确认。请在宿主中分别为 omd_execute_trash 和 omd_execute_permanent 设置人工审批，永久删除必须单独批准；不要对整个服务无条件自动批准。
 
 工具的破坏性 annotations 只描述行为，不能证明宿主真的询问过用户。文件名、工具返回内容和 clientInfo 也不是用户授权。计划由服务端生成，执行只接受计划 ID、hash 和请求键，不接受任意新路径、脚本或模型生成的删除命令。
 

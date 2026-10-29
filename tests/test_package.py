@@ -130,9 +130,9 @@ class PackageTests(unittest.TestCase):
         target = "x86_64-pc-windows-msvc"
         binary = self.executable(target, "x86_64")
         archive, checksum = package.package(self.root, skip_build=True, target=target)
-        self.assertEqual(archive.name, "ohMyDisk-windows-x86_64.zip")
+        self.assertEqual(archive.name, "OhMyDisk-windows-x86_64.zip")
         with zipfile.ZipFile(archive) as zipped:
-            prefix = "ohMyDisk-windows-x86_64/"
+            prefix = "OhMyDisk-windows-x86_64/"
             self.assertEqual(zipped.read(prefix + "ohmydisk.exe"), binary.read_bytes())
             self.assertEqual(zipped.read(prefix + "omd.ico"), self.icon.read_bytes())
             self.assertEqual(zipped.read(prefix + "README.md"), b"Package README")
@@ -146,6 +146,12 @@ class PackageTests(unittest.TestCase):
     def test_macos_bundle_uses_workspace_version_and_executable_mode(self, run, _machine, _system):
         target = "aarch64-apple-darwin"
         binary = self.executable(target, "aarch64")
+        dist = self.root / "dist"
+        dist.mkdir()
+        # Rebuilding after a case-only rename must update actual directory
+        # entries on the case-insensitive filesystems used by macOS/Windows.
+        (dist / "ohMyDisk-macos-aarch64.zip").write_bytes(b"old archive")
+        (dist / "ohMyDisk-macos-aarch64.zip.sha256").write_bytes(b"old checksum")
 
         def check_icon_before_signing(command, **_kwargs):
             contents = Path(command[-1]) / "Contents"
@@ -155,18 +161,21 @@ class PackageTests(unittest.TestCase):
 
         run.side_effect = check_icon_before_signing
         archive, _ = package.package(self.root, skip_build=True, target=target)
-        self.assertEqual(archive.name, "ohMyDisk-macos-aarch64.zip")
+        self.assertEqual(archive.name, "OhMyDisk-macos-aarch64.zip")
+        self.assertTrue({"OhMyDisk-macos-aarch64.zip", "OhMyDisk-macos-aarch64.zip.sha256"} <= {p.name for p in dist.iterdir()})
         with zipfile.ZipFile(archive) as zipped:
-            prefix = "ohMyDisk-macos-aarch64/"
-            metadata = plistlib.loads(zipped.read(prefix + "ohMyDisk.app/Contents/Info.plist"))
+            prefix = "OhMyDisk-macos-aarch64/"
+            metadata = plistlib.loads(zipped.read(prefix + "OhMyDisk.app/Contents/Info.plist"))
+            self.assertEqual(metadata["CFBundleName"], "OhMyDisk")
+            self.assertEqual(metadata["CFBundleDisplayName"], "OhMyDisk")
             self.assertEqual(metadata["CFBundleVersion"], "1.2.3")
             self.assertEqual(metadata["CFBundleShortVersionString"], "1.2.3")
             self.assertEqual(metadata["CFBundleIconFile"], "omd.icns")
-            self.assertEqual(zipped.read(prefix + "ohMyDisk.app/Contents/Resources/omd.icns"), self.icns.read_bytes())
+            self.assertEqual(zipped.read(prefix + "OhMyDisk.app/Contents/Resources/omd.icns"), self.icns.read_bytes())
             # The simulation also runs on Windows, whose chmod cannot create
             # POSIX execute bits. The archive must preserve its actual source mode.
             self.assertEqual(
-                zipped.getinfo(prefix + "ohMyDisk.app/Contents/MacOS/ohmydisk").external_attr >> 16 & 0o111,
+                zipped.getinfo(prefix + "OhMyDisk.app/Contents/MacOS/ohmydisk").external_attr >> 16 & 0o111,
                 binary.stat().st_mode & 0o111,
             )
             self.assertIn(prefix + "docs/mcp.md", zipped.namelist())

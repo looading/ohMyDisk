@@ -29,7 +29,7 @@ impl ServerHandler for Adapter {
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         if self.get_tool(&request.name).is_none() {
-            return Err(ErrorData::invalid_params("Unknown ohMyDisk tool", None));
+            return Err(ErrorData::invalid_params("Unknown OhMyDisk tool", None));
         }
         let args = Value::Object(request.arguments.unwrap_or_default());
         // The public MCP namespace does not leak into the shared service API.
@@ -37,7 +37,7 @@ impl ServerHandler for Adapter {
         let operation = request
             .name
             .strip_prefix("omd_")
-            .ok_or_else(|| ErrorData::invalid_params("Unknown ohMyDisk tool", None))?;
+            .ok_or_else(|| ErrorData::invalid_params("Unknown OhMyDisk tool", None))?;
         let requested_metric = args
             .get("size_metric")
             .and_then(Value::as_str)
@@ -66,7 +66,7 @@ fn checked_tool_result(
         // requests compatible, but never certify those rows as another metric.
         return CallToolResult::structured_error(json!({"error":{
             "code":"backend_upgrade_required",
-            "message":format!("The running background service did not confirm size_metric '{metric}'. Upgrade or restart the backend with the current ohMyDisk version before retrying this metric.")
+            "message":format!("The running background service did not confirm size_metric '{metric}'. Upgrade or restart the backend with the current OhMyDisk version before retrying this metric.")
         }}));
     }
     CallToolResult::structured(value)

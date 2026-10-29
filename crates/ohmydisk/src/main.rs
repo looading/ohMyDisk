@@ -52,7 +52,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("ohMyDisk: {error}");
+            eprintln!("OhMyDisk: {error}");
             ExitCode::FAILURE
         }
     }
@@ -62,6 +62,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = cli
         .data_dir
         .or_else(|| std::env::var_os("OHMYDISK_DATA_DIR").map(PathBuf::from))
+        // Preserve the existing storage path across the display-name casing change.
         .or_else(|| dirs::data_local_dir().map(|p| p.join("ohMyDisk")))
         .ok_or_else(|| {
             AppError::new(
