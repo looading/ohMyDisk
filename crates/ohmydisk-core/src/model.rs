@@ -108,6 +108,8 @@ pub enum NodeKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_bytes: Option<u64>,
     pub kind: NodeKind,
     pub logical_bytes: u64,
     pub allocated_bytes: Option<u64>,
@@ -120,6 +122,8 @@ pub struct FileInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Volume {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_observation: Option<crate::SpaceObservation>,
     pub id: String,
     pub name: String,
     pub mount_path: NativePath,
@@ -129,6 +133,8 @@ pub struct Volume {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_usage: Option<crate::NodeSpace>,
     pub id: String,
     pub parent_id: Option<String>,
     pub name: String,
@@ -163,6 +169,8 @@ pub struct ScanProgress {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Snapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_accounting: Option<crate::SpaceAccounting>,
     pub id: String,
     pub scan_id: String,
     pub root_id: String,
@@ -234,6 +242,8 @@ pub struct Job {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Query {
+    #[serde(default, skip_serializing_if = "crate::SizeMetric::is_logical")]
+    pub size_metric: crate::SizeMetric,
     pub scope_node_id: Option<String>,
     pub descendants: bool,
     pub name: Option<String>,

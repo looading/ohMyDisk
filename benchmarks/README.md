@@ -4,7 +4,8 @@ Use the core benchmark to isolate directory traversal and the service benchmark
 to measure when scans and queries become usable through IPC. They serve different
 purposes; a faster traversal alone does not establish faster application results.
 
-- [Measured iterations and results](RESULTS.md)
+- [v0.2.0 occupied-space and directory concurrency results, including regressions](PERFORMANCE-0.2.0.md)
+- [Earlier measured iterations and results](RESULTS.md)
 - [Core runner, fixtures, parity checks and cancellation](SCAN_BENCH.md)
 - [Service persistence, first pages and historical cold loads](SERVICE_BENCH.md)
 - [Pinned v0.1.0 reference runner](reference/README.md)

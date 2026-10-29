@@ -47,7 +47,7 @@ METRICS = (
     "rss_samples", "state_database_bytes", "state_wal_bytes", "state_shm_bytes",
     "state_total_bytes", "snapshot_payload_bytes", "snapshot_stored_bytes",
     "snapshot_compression_ratio", "source_scan_ms", "source_persist_ms",
-    "source_index_build_ms", "progress_writes", "files", "directories",
+    "source_index_build_ms", "source_scan_workers", "progress_writes", "files", "directories",
     "logical_bytes", "issue_count", "children_returned", "descendants_returned",
 ) + HISTORICAL_METRICS
 
@@ -374,7 +374,7 @@ def historical_query(binary: Path, state: Path, args: argparse.Namespace, *,
 
 
 def trial(binary: Path, root: Path, state: Path, args: argparse.Namespace,
-          expected: dict | None) -> dict:
+          expected: dict | None, size_metric: str = "logical") -> dict:
     state.mkdir(mode=0o700)
     service: subprocess.Popen | None = None
     sampler: RssSampler | None = None
@@ -418,6 +418,9 @@ def trial(binary: Path, root: Path, state: Path, args: argparse.Namespace,
             children_args = {"scan_id": scan_id, "node_id": root_id, "limit": 100}
             descendants_args = {"scan_id": scan_id, "scope_node_id": root_id,
                                 "descendants": True, "limit": 500}
+            if size_metric != "logical":
+                children_args["size_metric"] = size_metric
+                descendants_args["size_metric"] = size_metric
             children, first_children_ms = rpc(binary, state, service, "list_children",
                                               children_args, args.rpc_timeout)
             descendants, first_descendants_ms = rpc(binary, state, service, "query_nodes",
@@ -429,6 +432,8 @@ def trial(binary: Path, root: Path, state: Path, args: argparse.Namespace,
             if children != warm_children or descendants != warm_descendants:
                 raise BenchError("query_results_changed")
             for page in (children, descendants):
+                if size_metric != "logical" and page.get("size_metric") != size_metric:
+                    raise BenchError("requested_query_metric_not_supported")
                 if not isinstance(page.get("items"), list):
                     raise BenchError("query_missing_items")
             result = {
@@ -452,6 +457,7 @@ def trial(binary: Path, root: Path, state: Path, args: argparse.Namespace,
             for metric, field in (("source_scan_ms", "scan_ms"),
                                   ("source_persist_ms", "persist_ms"),
                                   ("source_index_build_ms", "index_build_ms"),
+                                  ("source_scan_workers", "scan_workers"),
                                   ("progress_writes", "progress_writes")):
                 result[metric] = optional_number(source.get(field))
             if expected is not None:
@@ -524,6 +530,10 @@ def parse_args() -> argparse.Namespace:
                         help="Generated fixture file count (default: 100000)")
     parser.add_argument("--runs", type=positive_int, default=5,
                         help="Measured runs per binary; one additional excluded warmup (default: 5)")
+    parser.add_argument("--size-metric", choices=("logical", "allocated", "attributed"), default="logical",
+                        help="Candidate query metric; legacy logical omits the argument")
+    parser.add_argument("--reference-size-metric", choices=("logical", "allocated", "attributed"), default="logical",
+                        help="Reference query metric, independently selected")
     parser.add_argument("--historical-restart", action="store_true",
                         help="Restart twice per trial to measure cold historical children and descendants")
     parser.add_argument("--poll-interval", type=positive_float, default=0.05,
@@ -591,7 +601,8 @@ def run(args: argparse.Namespace) -> dict:
                 for label in current_order:
                     state = scratch / f"state-{index:03d}-{label}"
                     try:
-                        result = trial(binaries[label], root, state, args, expected)
+                        result = trial(binaries[label], root, state, args, expected,
+                                       args.size_metric if label == "candidate" else args.reference_size_metric)
                     finally:
                         # trial() has reaped its child and closed all handles.
                         if state.exists():
@@ -620,7 +631,9 @@ def run(args: argparse.Namespace) -> dict:
                           "poll_interval_ms": args.poll_interval * 1000,
                           "rss_sample_interval_ms": args.rss_interval * 1000,
                           "children_limit": 100, "descendants_limit": 500,
-                          "historical_restart": args.historical_restart},
+                          "historical_restart": args.historical_restart,
+                          "query_metrics": {"candidate": args.size_metric,
+                                            "reference": args.reference_size_metric if "reference" in binaries else None}},
         "measurement_notes": [
             "Warm filesystem cache; operating-system caches are not cleared.",
             "Each trial starts an owned service with fresh state outside the scan root.",
@@ -629,6 +642,7 @@ def run(args: argparse.Namespace) -> dict:
             "Scan terminal timing starts before start_scan and ends when a terminal poll returns.",
             "Polling CLI process time and nonterminal poll sleeps are included in scan terminal timing.",
             "First children, first descendants, warm children and warm descendants run sequentially.",
+            "The selected query metric is recorded per binary; nonlogical metrics require an explicit matching response. Different query metrics are different workloads.",
             "Sampled maximum RSS is an observed ps sample, not the service process peak; null if unavailable.",
             "Database sizes include SQLite, WAL and SHM while the service remains alive; no checkpoint is forced.",
             "Snapshot original JSON and stored payload bytes sum legacy entities and snapshot_blobs outside timings.",
@@ -640,7 +654,8 @@ def run(args: argparse.Namespace) -> dict:
             "No GUI startup, chart layout, drawing or 650ms GUI polling delay is measured.",
         ],
         "source": source, "trial_order": order,
-        "binaries": {label: {"sha256": hashes[label], "trials": measured[label],
+        "binaries": {label: {"sha256": hashes[label], "size_metric": args.size_metric if label == "candidate" else args.reference_size_metric,
+                              "trials": measured[label],
                               "summary": summary(measured[label])} for label in binaries},
     }
     if "reference" in binaries:

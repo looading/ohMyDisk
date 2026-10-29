@@ -287,6 +287,7 @@ pub fn metadata(path: &Path) -> io::Result<FileInfo> {
         };
     }
     Ok(FileInfo {
+        private_bytes: None,
         kind,
         logical_bytes: u64::try_from(standard.EndOfFile)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?,
@@ -302,7 +303,7 @@ pub fn metadata(path: &Path) -> io::Result<FileInfo> {
     })
 }
 
-fn file_identity(file: &File) -> io::Result<(String, String)> {
+pub(super) fn file_identity(file: &File) -> io::Result<(String, String)> {
     let mut id = MaybeUninit::<FILE_ID_INFO>::uninit();
     // SAFETY: exact FILE_ID_INFO output buffer and live file handle.
     if unsafe {

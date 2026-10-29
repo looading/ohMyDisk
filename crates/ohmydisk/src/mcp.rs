@@ -104,7 +104,7 @@ fn tools() -> Vec<Tool> {
         make(
             "start_scan",
             "Start a background scan of an absolute local root; return scan_id and job_id immediately. Reuse request_key only for identical input. Does not follow directory links or cross filesystems.",
-            json!({"root_path":string,"request_key":string}),
+            json!({"root_path":string,"workers":{"type":"integer","minimum":1,"maximum":8},"request_key":string}),
             vec!["root_path", "request_key"],
             false,
             false,
@@ -139,7 +139,7 @@ fn tools() -> Vec<Tool> {
         ),
         make(
             "get_job",
-            "Poll background job state, progress, result identifiers and errors. Cancellation is cooperative.",
+            "Poll background job state, progress, result identifiers and errors. progress.bytes is the legacy logical total, not occupied disk space; use get_scan.space_accounting for occupancy. Cancellation is cooperative.",
             json!({"job_id":string}),
             vec!["job_id"],
             true,
@@ -157,8 +157,8 @@ fn tools() -> Vec<Tool> {
         ),
         make(
             "list_children",
-            "Read direct children of node_id in a frozen snapshot, ordered by logical size. Sizes of parents and children overlap.",
-            json!({"scan_id":string,"node_id":string}),
+            "Read direct children in a frozen snapshot, ordered by the requested size_metric (legacy default: logical). Attributed measures confirmed file space, not a cleanup yield guarantee. Sizes of parents and children overlap.",
+            json!({"scan_id":string,"node_id":string,"size_metric":{"type":"string","enum":["logical","allocated","attributed"],"default":"logical"}}),
             vec!["scan_id", "node_id"],
             true,
             false,
@@ -166,8 +166,8 @@ fn tools() -> Vec<Tool> {
         ),
         make(
             "query_nodes",
-            "Query real nodes in an immutable snapshot. descendants=false selects direct children of scope_node_id (root by default). Parent and descendant sizes must not be added together.",
-            json!({"scan_id":string,"scope_node_id":string,"descendants":{"type":"boolean"},"name":{"type":"string"},"kind":{"type":"string","enum":["directory","file","symlink","other"]},"min_bytes":{"type":"integer","minimum":0},"max_bytes":{"type":"integer","minimum":0},"modified_before":{"type":"integer","minimum":0}}),
+            "Query real nodes using logical, reported allocated, or attributed file bytes. Unknown/partial measurements are retained without numeric size filters; numeric filters exclude them and return excluded_unmeasured. descendants=false selects direct children (root by default). Parent and descendant sizes overlap.",
+            json!({"scan_id":string,"scope_node_id":string,"size_metric":{"type":"string","enum":["logical","allocated","attributed"],"default":"logical"},"descendants":{"type":"boolean"},"name":{"type":"string"},"kind":{"type":"string","enum":["directory","file","symlink","other"]},"min_bytes":{"type":"integer","minimum":0},"max_bytes":{"type":"integer","minimum":0},"modified_before":{"type":"integer","minimum":0}}),
             vec!["scan_id"],
             true,
             false,

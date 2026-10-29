@@ -1,33 +1,104 @@
-//! Bounded, immutable-snapshot sunburst layout and pointer hit testing.
-use std::collections::HashMap;
-use std::f32::consts::{FRAC_PI_2, TAU};
-
+//! Bounded occupancy-only sunburst and typed, non-destructive synthetic sectors.
+use super::{
+    Message,
+    space_view::{Capacity, node_bytes},
+};
 use iced::widget::canvas::{self, Action, Frame, Geometry, Path};
 use iced::{Color, Point, Rectangle, Renderer, Theme, mouse};
-use ohmydisk_core::model::{Node, NodeKind};
+use ohmydisk_core::{Node, NodeKind};
+use std::f32::consts::{FRAC_PI_2, TAU};
+use std::{cell::RefCell, collections::HashMap};
 
-use super::Message;
+const MAX_DEPTH: usize = 5;
+const MIN_SWEEP: f32 = 0.009;
+const MAX_SIBLINGS: usize = 48;
 
-const MAX_DEPTH: usize = 4;
-const MIN_SWEEP: f32 = 0.016;
-const MAX_SIBLINGS: usize = 36;
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    Node(String),
+    Aggregate { owner_id: String },
+    Available,
+    Unattributed,
+    UsedOverview,
+}
+impl Target {
+    pub fn node_id(&self) -> Option<&str> {
+        if let Self::Node(id) = self {
+            Some(id)
+        } else {
+            None
+        }
+    }
+}
+#[derive(Debug, Clone, PartialEq)]
 pub struct Segment {
-    /// Aggregates are display objects and never cleanup targets.
-    pub node_id: Option<String>,
-    pub owner_id: String,
+    pub target: Target,
     pub depth: usize,
     pub start: f32,
     pub end: f32,
     pub bytes: u64,
     pub color_index: usize,
 }
+impl Segment {
+    fn synthetic(target: Target, start: f32, end: f32, bytes: u64) -> Self {
+        Self {
+            target,
+            start,
+            end,
+            bytes,
+            depth: 0,
+            color_index: 0,
+        }
+    }
+}
 
-/// Missing descendants and tiny entries occupy an explicit aggregate sector.
-/// Directory bytes are used only to divide their parent's angle, never summed
-/// with descendant bytes to calculate a snapshot total.
 pub fn layout(root_id: &str, total: u64, nodes: &[Node]) -> Vec<Segment> {
+    hierarchy(root_id, total, TAU, nodes)
+}
+pub fn capacity_layout(root_id: &str, capacity: Capacity, nodes: &[Node]) -> Vec<Segment> {
+    if capacity.total == 0 {
+        return Vec::new();
+    }
+    let angle = |bytes: u64| TAU * (bytes as f64 / capacity.total as f64) as f32;
+    let known_end = angle(capacity.attributed);
+    let mut output = hierarchy(root_id, capacity.attributed, known_end, nodes);
+    let remainder_end = known_end + angle(capacity.remainder);
+    if capacity.remainder > 0 {
+        output.push(Segment::synthetic(
+            Target::Unattributed,
+            known_end,
+            remainder_end,
+            capacity.remainder,
+        ));
+    }
+    if capacity.available > 0 {
+        output.push(Segment::synthetic(
+            Target::Available,
+            remainder_end,
+            TAU,
+            capacity.available,
+        ));
+    }
+    output
+}
+pub fn overview_layout(total: u64, available: u64) -> Vec<Segment> {
+    let Some(used) = total.checked_sub(available) else {
+        return Vec::new();
+    };
+    if total == 0 {
+        return Vec::new();
+    }
+    let split = TAU * (used as f64 / total as f64) as f32;
+    let mut output = Vec::new();
+    if used > 0 {
+        output.push(Segment::synthetic(Target::UsedOverview, 0.0, split, used));
+    }
+    if available > 0 {
+        output.push(Segment::synthetic(Target::Available, split, TAU, available));
+    }
+    output
+}
+fn hierarchy(root: &str, total: u64, sweep: f32, nodes: &[Node]) -> Vec<Segment> {
     if total == 0 {
         return Vec::new();
     }
@@ -38,13 +109,12 @@ pub fn layout(root_id: &str, total: u64, nodes: &[Node]) -> Vec<Segment> {
         }
     }
     for entries in children.values_mut() {
-        entries.sort_by(|a, b| b.logical_bytes.cmp(&a.logical_bytes).then(a.id.cmp(&b.id)));
+        entries.sort_by(|a, b| node_bytes(b).cmp(&node_bytes(a)).then(a.id.cmp(&b.id)));
     }
-    let mut segments = Vec::new();
-    layout_level(root_id, total, 0.0, TAU, 0, 0, &children, &mut segments);
-    segments
+    let mut output = Vec::new();
+    layout_level(root, total, 0.0, sweep, 0, 0, &children, &mut output);
+    output
 }
-
 #[allow(clippy::too_many_arguments)]
 fn layout_level(
     parent: &str,
@@ -60,12 +130,20 @@ fn layout_level(
         return;
     }
     let entries = children.get(parent).map(Vec::as_slice).unwrap_or(&[]);
+    // An inconsistent subtree is never made to fit by scaling or truncation.
+    let sum = entries.iter().try_fold(0_u64, |sum, node| {
+        sum.checked_add(node_bytes(node).unwrap_or(0))
+    });
+    if sum.is_none_or(|sum| sum > total) {
+        return;
+    }
     let mut angle = start;
     let mut represented = 0_u64;
     let mut displayed = 0;
     for (index, node) in entries.iter().enumerate() {
-        let remaining = total.saturating_sub(represented);
-        let bytes = node.logical_bytes.min(remaining);
+        let Some(bytes) = node_bytes(node) else {
+            continue;
+        };
         if bytes == 0 {
             continue;
         }
@@ -75,11 +153,10 @@ fn layout_level(
         }
         let color_index = if depth == 0 { index } else { palette };
         output.push(Segment {
-            node_id: Some(node.id.clone()),
-            owner_id: parent.to_owned(),
+            target: Target::Node(node.id.clone()),
             depth,
             start: angle,
-            end: (angle + width).min(start + sweep),
+            end: angle + width,
             bytes,
             color_index,
         });
@@ -95,15 +172,16 @@ fn layout_level(
                 output,
             );
         }
-        represented = represented.saturating_add(bytes);
+        represented += bytes;
         angle += width;
         displayed += 1;
     }
-    let remainder = total.saturating_sub(represented);
-    if remainder > 0 && start + sweep - angle > 0.0001 {
+    let remainder = total - represented;
+    if remainder > 0 {
         output.push(Segment {
-            node_id: None,
-            owner_id: parent.to_owned(),
+            target: Target::Aggregate {
+                owner_id: parent.into(),
+            },
             depth,
             start: angle,
             end: start + sweep,
@@ -112,7 +190,6 @@ fn layout_level(
         });
     }
 }
-
 #[derive(Debug, Clone, Copy)]
 pub struct Metrics {
     pub center: Point,
@@ -121,122 +198,77 @@ pub struct Metrics {
 }
 impl Metrics {
     pub fn new(width: f32, height: f32) -> Self {
-        let radius = (width.min(height) * 0.46).max(1.0);
+        let radius = (width.min(height) * 0.465).max(1.0);
         Self {
             center: Point::new(width / 2.0, height / 2.0),
-            hole: radius * 0.29,
-            ring: radius * 0.71 / MAX_DEPTH as f32,
+            hole: radius * 0.27,
+            ring: radius * 0.73 / MAX_DEPTH as f32,
         }
     }
+    fn in_center(self, point: Point) -> bool {
+        point.distance(self.center) < self.hole
+    }
 }
-
 pub fn hit_test(segments: &[Segment], metrics: Metrics, point: Point) -> Option<usize> {
-    let dx = point.x - metrics.center.x;
-    let dy = point.y - metrics.center.y;
-    let radius = dx.hypot(dy);
+    let radius = point.distance(metrics.center);
     if radius < metrics.hole || radius >= metrics.hole + metrics.ring * MAX_DEPTH as f32 {
         return None;
     }
     let depth = ((radius - metrics.hole) / metrics.ring).floor() as usize;
-    let angle = (dy.atan2(dx) + FRAC_PI_2).rem_euclid(TAU);
-    segments
-        .iter()
-        .position(|s| s.depth == depth && angle >= s.start && angle < s.end)
+    let angle = ((point.y - metrics.center.y).atan2(point.x - metrics.center.x) + FRAC_PI_2)
+        .rem_euclid(TAU);
+    segments.iter().position(|segment| {
+        (segment.depth == depth || synthetic_band(segment))
+            && angle >= segment.start
+            && angle < segment.end
+    })
 }
-
-pub fn color(index: usize, depth: usize) -> Color {
-    const COLORS: [(f32, f32, f32); 9] = [
-        (0.31, 0.40, 0.96),
-        (0.39, 0.32, 0.90),
-        (0.52, 0.32, 0.91),
-        (0.31, 0.56, 0.94),
-        (0.35, 0.46, 0.85),
-        (0.57, 0.40, 0.88),
-        (0.28, 0.62, 0.83),
-        (0.48, 0.48, 0.96),
-        (0.39, 0.38, 0.76),
-    ];
-    let (r, g, b) = COLORS[index % COLORS.len()];
-    let light = depth as f32 * 0.075;
-    Color::from_rgb(
-        (r + light).min(1.0),
-        (g + light).min(1.0),
-        (b + light).min(1.0),
+fn synthetic_band(segment: &Segment) -> bool {
+    matches!(
+        segment.target,
+        Target::Available | Target::Unattributed | Target::UsedOverview
     )
 }
-
+pub fn color(index: usize, depth: usize) -> Color {
+    const COLORS: [(f32, f32, f32); 9] = [
+        (0.25, 0.82, 0.70),
+        (0.29, 0.70, 0.94),
+        (0.53, 0.48, 0.98),
+        (0.83, 0.40, 0.86),
+        (0.98, 0.45, 0.56),
+        (0.99, 0.67, 0.36),
+        (0.86, 0.83, 0.34),
+        (0.58, 0.84, 0.40),
+        (0.30, 0.76, 0.86),
+    ];
+    let (r, g, b) = COLORS[index % COLORS.len()];
+    let mix = depth as f32 * 0.09;
+    Color::from_rgb(
+        r + (1.0 - r) * mix,
+        g + (1.0 - g) * mix,
+        b + (1.0 - b) * mix,
+    )
+}
 pub struct Sunburst<'a> {
     pub segments: &'a [Segment],
-    pub hover: Option<&'a str>,
+    pub hover: Option<Target>,
     pub collected: Vec<String>,
+    pub can_go_up: bool,
+    pub drag_label: Option<&'a str>,
 }
-
-#[derive(Default)]
-pub struct PointerState {
-    hover: Option<usize>,
-    pressed: Option<usize>,
-}
-
-impl canvas::Program<Message> for Sunburst<'_> {
-    type State = PointerState;
-
-    fn update(
-        &self,
-        state: &mut Self::State,
-        event: &iced::Event,
-        bounds: Rectangle,
-        cursor: mouse::Cursor,
-    ) -> Option<Action<Message>> {
-        let hit = cursor.position_in(bounds).and_then(|point| {
-            hit_test(
-                self.segments,
-                Metrics::new(bounds.width, bounds.height),
-                point,
-            )
-        });
-        match event {
-            iced::Event::Mouse(mouse::Event::CursorMoved { .. }) if hit != state.hover => {
-                state.hover = hit;
-                let id = hit.and_then(|i| self.segments[i].node_id.clone());
-                Some(Action::publish(Message::Hover(id)))
-            }
-            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-                if hit.is_some() =>
-            {
-                state.pressed = hit;
-                let id = hit.and_then(|i| self.segments[i].node_id.clone());
-                Some(Action::publish(Message::DragStarted(id)).and_capture())
-            }
-            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
-                if state.pressed.is_some() =>
-            {
-                let pressed = state.pressed.take();
-                let outside = !cursor.is_over(bounds);
-                let segment =
-                    if pressed == hit { hit } else { None }.map(|i| self.segments[i].clone());
-                Some(Action::publish(Message::ChartReleased { segment, outside }).and_capture())
-            }
-            _ => None,
-        }
-    }
-
-    fn draw(
-        &self,
-        _state: &Self::State,
-        renderer: &Renderer,
-        _theme: &Theme,
-        bounds: Rectangle,
-        _cursor: mouse::Cursor,
-    ) -> Vec<Geometry> {
-        let mut frame = Frame::new(renderer, bounds.size());
-        let metrics = Metrics::new(bounds.width, bounds.height);
+impl Sunburst<'_> {
+    fn draw_base(&self, frame: &mut Frame, metrics: Metrics, center_hover: bool) {
         for segment in self.segments {
-            let inner = metrics.hole + segment.depth as f32 * metrics.ring + 1.8;
-            let outer = inner + metrics.ring - 3.6;
-            let gap = (0.008_f32).min((segment.end - segment.start) * 0.12);
+            let inner = metrics.hole + segment.depth as f32 * metrics.ring + 0.7;
+            let outer = if synthetic_band(segment) {
+                metrics.hole + metrics.ring * MAX_DEPTH as f32 - 1.0
+            } else {
+                inner + metrics.ring - 1.4
+            };
+            let gap = 0.004_f32.min((segment.end - segment.start) * 0.10);
             let start = segment.start + gap / 2.0 - FRAC_PI_2;
             let end = segment.end - gap / 2.0 - FRAC_PI_2;
-            let steps = (((end - start) * 60.0).ceil() as usize).max(2);
+            let steps = (((end - start) * 100.0).ceil() as usize).max(2);
             let path = Path::new(|builder| {
                 for index in 0..=steps {
                     let angle = start + (end - start) * index as f32 / steps as f32;
@@ -259,80 +291,267 @@ impl canvas::Program<Message> for Sunburst<'_> {
                 }
                 builder.close();
             });
-            let mut fill = color(segment.color_index, segment.depth);
-            if segment.node_id.is_none() {
-                fill = Color::from_rgb(0.23, 0.25, 0.36);
-            }
-            let hovered = segment
-                .node_id
-                .as_deref()
-                .is_some_and(|id| Some(id) == self.hover);
+            let mut fill = match segment.target {
+                Target::Available => Color::from_rgb(0.12, 0.16, 0.22),
+                Target::Unattributed => Color::from_rgb(0.38, 0.38, 0.49),
+                Target::UsedOverview => Color::from_rgb(0.30, 0.45, 0.66),
+                Target::Aggregate { .. } => Color::from_rgb(0.27, 0.31, 0.39),
+                Target::Node(_) => color(segment.color_index, segment.depth),
+            };
+            let hovered = self.hover.as_ref() == Some(&segment.target);
             let selected = segment
-                .node_id
-                .as_ref()
-                .is_some_and(|id| self.collected.contains(id));
+                .target
+                .node_id()
+                .is_some_and(|id| self.collected.iter().any(|item| item == id));
             if hovered {
-                fill = Color::from_rgb(
-                    (fill.r + 0.16).min(1.0),
-                    (fill.g + 0.16).min(1.0),
-                    (fill.b + 0.10).min(1.0),
-                );
+                fill.r += (1.0 - fill.r) * 0.20;
+                fill.g += (1.0 - fill.g) * 0.20;
+                fill.b += (1.0 - fill.b) * 0.20;
             }
             if selected {
-                fill.a = 0.42;
+                fill.a = 0.48;
             }
             frame.fill(&path, fill);
-            if selected {
+            if hovered || selected {
                 frame.stroke(
                     &path,
                     canvas::Stroke::default()
-                        .with_color(Color::from_rgb(0.70, 0.73, 1.0))
+                        .with_color(Color::from_rgba(1.0, 1.0, 1.0, 0.75))
                         .with_width(1.2),
                 );
             }
         }
         if self.segments.is_empty() {
             for depth in 0..MAX_DEPTH {
-                let radius = metrics.hole + (depth as f32 + 0.5) * metrics.ring;
                 frame.stroke(
-                    &Path::circle(metrics.center, radius),
+                    &Path::circle(
+                        metrics.center,
+                        metrics.hole + (depth as f32 + 0.5) * metrics.ring,
+                    ),
                     canvas::Stroke::default()
-                        .with_color(Color::from_rgb(0.13, 0.15, 0.22))
-                        .with_width(metrics.ring - 4.0),
+                        .with_color(Color::from_rgb(0.12, 0.15, 0.21))
+                        .with_width(metrics.ring - 2.0),
                 );
             }
         }
-        vec![frame.into_geometry()]
+        if center_hover {
+            frame.stroke(
+                &Path::circle(metrics.center, metrics.hole - 2.0),
+                canvas::Stroke::default()
+                    .with_color(Color::from_rgba(0.7, 0.78, 0.9, 0.6))
+                    .with_width(1.0),
+            );
+        }
     }
+}
 
+/// Size invalidation belongs to canvas::Cache; all other painted inputs use value equality.
+#[derive(Debug)]
+struct GeometryKey {
+    segments: Vec<Segment>,
+    hover: Option<Target>,
+    collected: Vec<String>,
+    center_hover: bool,
+}
+impl GeometryKey {
+    fn capture(
+        segments: &[Segment],
+        hover: Option<&Target>,
+        collected: &[String],
+        center_hover: bool,
+    ) -> Self {
+        Self {
+            segments: segments.to_vec(),
+            hover: hover.cloned(),
+            collected: collected.to_vec(),
+            center_hover,
+        }
+    }
+    fn matches(
+        &self,
+        segments: &[Segment],
+        hover: Option<&Target>,
+        collected: &[String],
+        center_hover: bool,
+    ) -> bool {
+        self.segments == segments
+            && self.hover.as_ref() == hover
+            && self.collected == collected
+            && self.center_hover == center_hover
+    }
+}
+
+#[derive(Default)]
+pub struct PointerState {
+    geometry: canvas::Cache<Renderer>,
+    geometry_key: RefCell<Option<GeometryKey>>,
+    hover: Option<usize>,
+    pressed: Option<usize>,
+    center_pressed: bool,
+    origin: Option<Point>,
+    dragging: bool,
+}
+impl canvas::Program<Message> for Sunburst<'_> {
+    type State = PointerState;
+    fn update(
+        &self,
+        state: &mut Self::State,
+        event: &iced::Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<Action<Message>> {
+        let position = cursor.position_in(bounds);
+        let metrics = Metrics::new(bounds.width, bounds.height);
+        let hit = position.and_then(|point| hit_test(self.segments, metrics, point));
+        match event {
+            iced::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                if let (Some(origin), Some(point)) = (state.origin, position) {
+                    state.dragging |= origin.distance(point) > 6.0;
+                }
+                if hit != state.hover {
+                    state.hover = hit;
+                    Some(Action::publish(Message::ChartHover(
+                        hit.map(|i| self.segments[i].target.clone()),
+                    )))
+                } else if state.pressed.is_some() {
+                    Some(Action::request_redraw())
+                } else {
+                    None
+                }
+            }
+            iced::Event::Mouse(mouse::Event::CursorLeft) => {
+                state.hover = None;
+                Some(Action::publish(Message::ChartHover(None)))
+            }
+            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+                if hit.is_some() =>
+            {
+                state.pressed = hit;
+                state.origin = position;
+                state.dragging = false;
+                let id = hit.and_then(|i| self.segments[i].target.node_id().map(str::to_owned));
+                Some(Action::publish(Message::DragStarted(id)).and_capture())
+            }
+            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+                if self.can_go_up && position.is_some_and(|point| metrics.in_center(point)) =>
+            {
+                state.center_pressed = true;
+                Some(Action::request_redraw().and_capture())
+            }
+            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+                if state.center_pressed =>
+            {
+                state.center_pressed = false;
+                if position.is_some_and(|point| metrics.in_center(point)) {
+                    Some(Action::publish(Message::Up).and_capture())
+                } else {
+                    Some(Action::request_redraw())
+                }
+            }
+            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+                if state.pressed.is_some() =>
+            {
+                let pressed = state.pressed.take();
+                state.origin = None;
+                let segment = if !state.dragging && pressed == hit {
+                    hit.map(|i| self.segments[i].clone())
+                } else {
+                    None
+                };
+                state.dragging = false;
+                Some(
+                    Action::publish(Message::ChartReleased {
+                        segment,
+                        outside: !cursor.is_over(bounds),
+                    })
+                    .and_capture(),
+                )
+            }
+            _ => None,
+        }
+    }
+    fn draw(
+        &self,
+        state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let metrics = Metrics::new(bounds.width, bounds.height);
+        let center_hover = self.can_go_up
+            && cursor
+                .position_in(bounds)
+                .is_some_and(|point| metrics.in_center(point));
+        let invalidated = {
+            let previous = state.geometry_key.borrow();
+            previous.as_ref().is_none_or(|key| {
+                !key.matches(
+                    self.segments,
+                    self.hover.as_ref(),
+                    &self.collected,
+                    center_hover,
+                )
+            })
+        };
+        if invalidated {
+            state.geometry.clear();
+            let key = GeometryKey::capture(
+                self.segments,
+                self.hover.as_ref(),
+                &self.collected,
+                center_hover,
+            );
+            *state.geometry_key.borrow_mut() = Some(key);
+        }
+        // Both key borrows above end before Cache::draw invokes the frame closure.
+        let base = state.geometry.draw(renderer, bounds.size(), |frame| {
+            self.draw_base(frame, metrics, center_hover);
+        });
+        let mut layers = vec![base];
+        if state.dragging {
+            if let (Some(label), Some(point)) = (self.drag_label, cursor.position_in(bounds)) {
+                let mut frame = Frame::new(renderer, bounds.size());
+                frame.fill_rectangle(
+                    Point::new(point.x + 12.0, point.y + 10.0),
+                    iced::Size::new(210.0, 32.0),
+                    Color::from_rgba(0.10, 0.13, 0.20, 0.96),
+                );
+                frame.fill_text(canvas::Text {
+                    content: super::crop(label, 24),
+                    position: Point::new(point.x + 22.0, point.y + 17.0),
+                    color: Color::WHITE,
+                    size: 12.0.into(),
+                    font: super::chinese_font(),
+                    ..canvas::Text::default()
+                });
+                layers.push(frame.into_geometry());
+            }
+        }
+        // No empty/live overlay is submitted on idle or text-input blink frames.
+        layers
+    }
     fn mouse_interaction(
         &self,
         _state: &Self::State,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
-        if cursor
-            .position_in(bounds)
-            .and_then(|point| {
-                hit_test(
-                    self.segments,
-                    Metrics::new(bounds.width, bounds.height),
-                    point,
-                )
-            })
-            .is_some()
-        {
+        let metrics = Metrics::new(bounds.width, bounds.height);
+        if cursor.position_in(bounds).is_some_and(|point| {
+            hit_test(self.segments, metrics, point).is_some()
+                || (self.can_go_up && metrics.in_center(point))
+        }) {
             mouse::Interaction::Pointer
         } else {
             mouse::Interaction::default()
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ohmydisk_core::model::{NativePath, NodeKind};
+    use ohmydisk_core::{NativePath, NodeSpace};
     fn node(id: &str, parent: &str, bytes: u64, directory: bool) -> Node {
         Node {
             id: id.into(),
@@ -344,8 +563,13 @@ mod tests {
             } else {
                 NodeKind::File
             },
-            logical_bytes: bytes,
+            logical_bytes: bytes * 100,
             allocated_bytes: None,
+            space_usage: Some(NodeSpace {
+                attributed_bytes: bytes,
+                measured_entries: 1,
+                unmeasured_entries: 0,
+            }),
             modified_ns: None,
             identity: id.into(),
             volume_id: "test".into(),
@@ -355,49 +579,124 @@ mod tests {
         }
     }
     #[test]
-    fn angles_respect_parent_and_missing_data_becomes_aggregate() {
+    fn geometry_cache_compares_values_instead_of_slice_identity_or_length() {
+        let segments = layout("root", 100, &[node("a", "root", 100, false)]);
+        let selected = vec!["a".to_owned()];
+        let hover = Target::Node("a".into());
+        let key = GeometryKey::capture(&segments, Some(&hover), &selected, false);
+        assert!(key.matches(
+            &segments.clone(),
+            Some(&hover.clone()),
+            &selected.clone(),
+            false
+        ));
+        let mut changed = segments.clone();
+        changed[0].end -= 0.1;
+        assert!(!key.matches(&changed, Some(&hover), &selected, false));
+        changed = segments.clone();
+        changed[0].color_index += 1;
+        assert!(!key.matches(&changed, Some(&hover), &selected, false));
+        changed = segments.clone();
+        changed[0].target = Target::Node("b".into());
+        assert!(!key.matches(&changed, Some(&hover), &selected, false));
+        changed = segments.clone();
+        changed[0].bytes += 1;
+        assert!(!key.matches(&changed, Some(&hover), &selected, false));
+    }
+    #[test]
+    fn geometry_cache_invalidates_for_focus_collection_and_center_outline() {
+        let segments = layout("root", 100, &[node("a", "root", 100, false)]);
+        let hover = Target::Node("a".into());
+        let selected = vec!["a".to_owned()];
+        let key = GeometryKey::capture(&segments, Some(&hover), &selected, false);
+        assert!(!key.matches(&segments, None, &selected, false));
+        assert!(!key.matches(&segments, Some(&Target::Available), &selected, false));
+        assert!(!key.matches(&segments, Some(&hover), &["b".to_owned()], false));
+        assert!(!key.matches(&segments, Some(&hover), &selected, true));
+    }
+    #[test]
+    fn capacity_ring_conserves_observation_and_synthetic_targets_are_typed() {
+        let nodes = [
+            node("available", "root", 500, true),
+            node("child", "available", 300, false),
+        ];
+        let segments = capacity_layout(
+            "root",
+            Capacity {
+                total: 995,
+                available: 245,
+                attributed: 500,
+                remainder: 250,
+            },
+            &nodes,
+        );
+        assert_eq!(
+            segments
+                .iter()
+                .filter(|s| s.depth == 0)
+                .map(|s| s.bytes)
+                .sum::<u64>(),
+            995
+        );
+        assert!(
+            segments
+                .iter()
+                .any(|s| s.target == Target::Node("available".into()))
+        );
+        assert!(segments.iter().any(|s| s.target == Target::Available));
+        assert!((segments.last().unwrap().end - TAU).abs() < 0.0001);
+    }
+    #[test]
+    fn tiny_folder_attribution_remains_accounted_in_the_volume_ring() {
+        let capacity = Capacity {
+            total: 995_000_000_000,
+            available: 245_000_000_000,
+            attributed: 8_800_000,
+            remainder: 749_991_200_000,
+        };
+        let segments = capacity_layout(
+            "root",
+            capacity,
+            &[node("small-folder", "root", 8_800_000, true)],
+        );
+        assert_eq!(
+            segments
+                .iter()
+                .filter(|segment| segment.depth == 0)
+                .map(|segment| segment.bytes)
+                .sum::<u64>(),
+            capacity.total
+        );
+        assert!(
+            segments
+                .iter()
+                .any(|segment| matches!(segment.target, Target::Aggregate { .. })
+                    && segment.bytes == 8_800_000)
+        );
+    }
+    #[test]
+    fn subtree_geometry_uses_attributed_bytes_and_never_caps_invalid_data() {
         let segments = layout(
             "root",
             100,
             &[
                 node("a", "root", 60, true),
                 node("b", "root", 40, false),
-                node("a1", "a", 30, false),
+                node("c", "a", 30, false),
             ],
         );
-        let root: Vec<_> = segments.iter().filter(|s| s.depth == 0).collect();
-        assert_eq!(root.len(), 2);
-        assert!((root[0].end - TAU * 0.6).abs() < 0.001);
-        let aggregate = segments
-            .iter()
-            .find(|s| s.depth == 1 && s.node_id.is_none())
-            .unwrap();
-        assert_eq!(aggregate.bytes, 30);
-        assert!((aggregate.end - root[0].end).abs() < 0.001);
-    }
-    #[test]
-    fn hit_testing_rejects_hole_and_respects_ring_depth() {
-        let segments = layout(
-            "root",
-            100,
-            &[node("a", "root", 100, true), node("a1", "a", 100, false)],
-        );
+        assert!((segments[0].end - TAU * 0.6).abs() < 0.001);
+        assert!(segments.iter().any(|s| s.depth == 1
+            && matches!(s.target, Target::Aggregate { .. })
+            && s.bytes == 30));
+        assert!(layout("root", 10, &[node("too-large", "root", 20, false)]).is_empty());
         let m = Metrics::new(400.0, 400.0);
         assert!(hit_test(&segments, m, m.center).is_none());
-        let index = hit_test(
-            &segments,
-            m,
-            Point::new(m.center.x, m.center.y - m.hole - m.ring * 1.5),
-        )
-        .unwrap();
-        assert_eq!(segments[index].node_id.as_deref(), Some("a1"));
-        assert!(hit_test(&segments, m, Point::new(900.0, 900.0)).is_none());
     }
     #[test]
-    fn zero_sizes_and_empty_scans_are_safe() {
-        assert!(layout("root", 0, &[node("a", "root", 0, false)]).is_empty());
-        let segments = layout("root", 100, &[]);
-        assert_eq!(segments.len(), 1);
-        assert!(segments[0].node_id.is_none());
+    fn unmeasured_files_do_not_become_logical_wedges() {
+        let mut unknown = node("unknown", "root", 900, false);
+        unknown.space_usage = None;
+        assert!(layout("root", 0, &[unknown]).is_empty());
     }
 }

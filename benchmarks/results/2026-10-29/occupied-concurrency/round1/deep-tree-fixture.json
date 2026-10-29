@@ -1,0 +1,38 @@
+{
+  "kind": "deep-tree",
+  "seed": 20261031,
+  "parameters": {
+    "depth": 128,
+    "files_per_level": 64,
+    "regular_files": 8192,
+    "file_bytes_min": 128,
+    "file_bytes_max": 318
+  },
+  "features": {
+    "symlinks": 0,
+    "hardlinks": 0,
+    "symlinks_unavailable": false,
+    "hardlinks_unavailable": false
+  },
+  "expected": {
+    "nodes": 8321,
+    "files": 8192,
+    "directories": 129,
+    "boundaries": 0,
+    "hidden_entries": 0,
+    "hardlinked_file_entries": 0,
+    "metadata_errors": 0,
+    "read_directory_errors": 0,
+    "kinds": {
+      "directory": 129,
+      "file": 8192,
+      "symlink": 0,
+      "other": 0
+    },
+    "logical_bytes": 1826816,
+    "expected_complete": true,
+    "inventory_digest": "8d7c5bd79732645c9f50ee5291350cda7e64fe1370244fdbbe0b9b212040b741"
+  },
+  "fixture_setup_ms": 3969.9510419741273,
+  "setup_timing": "fixture creation plus independent inventory; excluded from scan timing"
+}

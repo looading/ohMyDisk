@@ -45,7 +45,7 @@ pub(super) fn read_directory(
         volattr: 0,
         dirattr: 0,
         fileattr: FILE,
-        forkattr: 0,
+        forkattr: libc::ATTR_CMNEXT_PRIVATESIZE,
     };
     enumerate(path, visitor, |buffer| {
         // SAFETY: directory owns a readable directory fd for this entire call.
@@ -58,7 +58,7 @@ pub(super) fn read_directory(
                 (&raw mut attributes).cast(),
                 buffer.as_mut_ptr().cast(),
                 std::mem::size_of_val(buffer),
-                0,
+                libc::FSOPT_ATTR_CMN_EXTENDED.into(),
             )
         };
         if result < 0 {
@@ -117,6 +117,7 @@ fn enumerate(
             if !visitor(DirectoryEvent::Entry(ScanEntry {
                 path: path.join(parsed.name),
                 info: parsed.info.map(Ok),
+                kind_hint: parsed.kind_hint,
             })) {
                 return Ok(());
             }
@@ -149,6 +150,7 @@ fn buffer_bytes(buffer: &[u64]) -> &[u8] {
 struct ParsedEntry<'a> {
     name: &'a OsStr,
     info: Option<FileInfo>,
+    kind_hint: Option<NodeKind>,
 }
 
 fn parse_record(record: &[u8]) -> io::Result<ParsedEntry<'_>> {
@@ -167,7 +169,7 @@ fn parse_record(record: &[u8]) -> io::Result<ParsedEntry<'_>> {
         || volume != 0
         || directory != 0
         || file & !FILE != 0
-        || fork != 0
+        || fork & !libc::ATTR_CMNEXT_PRIVATESIZE != 0
     {
         return Err(invalid_record());
     }
@@ -189,6 +191,7 @@ fn parse_record(record: &[u8]) -> io::Result<ParsedEntry<'_>> {
     let links = cursor.optional(file, libc::ATTR_FILE_LINKCOUNT, Cursor::u32)?;
     let allocated = cursor.optional(file, libc::ATTR_FILE_ALLOCSIZE, Cursor::i64)?;
     let logical = cursor.optional(file, libc::ATTR_FILE_DATALENGTH, Cursor::i64)?;
+    let private = cursor.optional(fork, libc::ATTR_CMNEXT_PRIVATESIZE, Cursor::i64)?;
 
     let start = name_reference
         .checked_add_signed(name_offset as isize)
@@ -214,13 +217,25 @@ fn parse_record(record: &[u8]) -> io::Result<ParsedEntry<'_>> {
         && common & REQUIRED_COMMON == REQUIRED_COMMON
         && file & FILE == FILE
     {
-        regular_info(device, inode, links, allocated, logical, modified)
+        regular_info(device, inode, links, allocated, logical, modified).map(|mut info| {
+            // Absence and invalid negative values are unknown, not measured zero.
+            info.private_bytes = private.and_then(|bytes| u64::try_from(bytes).ok());
+            info
+        })
     } else {
         None
     };
     Ok(ParsedEntry {
         name: OsStr::from_bytes(name),
         info,
+        // A hint only: the worker must obtain fresh metadata before traversal.
+        kind_hint: match object_type {
+            Some(1) => Some(NodeKind::File),
+            Some(2) => Some(NodeKind::Directory),
+            Some(5) => Some(NodeKind::Symlink),
+            Some(_) => Some(NodeKind::Other),
+            None => None,
+        },
     })
 }
 
@@ -243,6 +258,7 @@ fn regular_info(
     let modified_ns = u64::try_from(i128::from(seconds) * 1_000_000_000 + i128::from(nanos)).ok();
     let allocated = u64::try_from(allocated?).ok()?.checked_add(511)? & !511;
     Some(FileInfo {
+        private_bytes: None,
         kind: NodeKind::File,
         logical_bytes: u64::try_from(logical?).ok()?,
         allocated_bytes: Some(allocated),
@@ -376,6 +392,10 @@ mod tests {
                 let expected = platform.metadata(&entry.path).unwrap();
                 let actual = if expected.kind == NodeKind::File {
                     let info = entry.info.unwrap().unwrap();
+                    let mut expected = expected;
+                    // Cleanup metadata deliberately omits this scan-only field;
+                    // all original stat-compatible fields must still match.
+                    expected.private_bytes = info.private_bytes;
                     assert_eq!(
                         serde_json::to_value(&info).unwrap(),
                         serde_json::to_value(&expected).unwrap(),
@@ -690,6 +710,33 @@ mod tests {
     }
 
     #[test]
+    fn private_size_requires_its_returned_bit_and_keeps_directory_hints() {
+        let absent = parse_record(&record(b"item", COMMON, FILE, VREG, 0))
+            .unwrap()
+            .info
+            .unwrap();
+        assert_eq!(absent.private_bytes, None);
+        for (raw, expected) in [(0, Some(0)), (4096, Some(4096)), (-1, None)] {
+            let bytes = record_with_private(b"item", COMMON, FILE, VREG, 0, Some(raw));
+            let info = parse_record(&bytes).unwrap().info.unwrap();
+            assert_eq!(info.private_bytes, expected);
+            assert_eq!(info.logical_bytes, 7);
+            assert_eq!(info.allocated_bytes, Some(4096));
+        }
+        let bytes = record(b"directory", COMMON, 0, 2, 0);
+        let entry = parse_record(&bytes).unwrap();
+        assert_eq!(entry.kind_hint, Some(NodeKind::Directory));
+        assert!(
+            entry.info.is_none(),
+            "hints must not replace fresh directory metadata"
+        );
+        let mut truncated = record_with_private(b"item", COMMON, FILE, VREG, 0, Some(4096));
+        truncated.truncate(88);
+        truncated[..4].copy_from_slice(&88_u32.to_ne_bytes());
+        assert!(parse_record(&truncated).is_err());
+    }
+
+    #[test]
     fn malformed_records_are_rejected_without_dereferencing_offsets() {
         let valid = record(b"item", COMMON, FILE, VREG, 0);
         for length in 0..valid.len() {
@@ -737,8 +784,20 @@ mod tests {
     }
 
     fn record(name: &[u8], common: u32, file: u32, object_type: u32, error: u32) -> Vec<u8> {
+        record_with_private(name, common, file, object_type, error, None)
+    }
+
+    fn record_with_private(
+        name: &[u8],
+        common: u32,
+        file: u32,
+        object_type: u32,
+        error: u32,
+        private: Option<i64>,
+    ) -> Vec<u8> {
         let mut bytes = Vec::new();
-        for value in [0, common, 0, 0, file, 0] {
+        let fork = private.map_or(0, |_| libc::ATTR_CMNEXT_PRIVATESIZE);
+        for value in [0, common, 0, 0, file, fork] {
             bytes.extend(value.to_ne_bytes());
         }
         if common & ATTR_CMN_ERROR != 0 {
@@ -767,6 +826,9 @@ mod tests {
         }
         if file & libc::ATTR_FILE_DATALENGTH != 0 {
             bytes.extend(7_i64.to_ne_bytes());
+        }
+        if let Some(private) = private {
+            bytes.extend(private.to_ne_bytes());
         }
         let offset = i32::try_from(bytes.len() - reference).unwrap();
         bytes[reference..reference + 4].copy_from_slice(&offset.to_ne_bytes());

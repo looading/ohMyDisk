@@ -1,8 +1,14 @@
 //! Native desktop frontend. Filesystem work belongs to the shared local service;
 //! the UI only owns navigation, an uncommitted collection, and explicit approval.
+mod space_view;
 mod sunburst;
+mod views;
 
-use std::{collections::HashSet, path::PathBuf, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    time::Duration,
+};
 
 use iced::widget::{
     Column, Row, Space, button, canvas, column, container, mouse_area, row, rule, scrollable,
@@ -14,9 +20,11 @@ use iced::{
 use ohmydisk_core::model::{
     CleanupMode, ItemResult, ItemStatus, Job, Node, NodeKind, Volume, new_id,
 };
+use ohmydisk_core::{SpaceAccounting, SpaceObservation};
 use ohmydisk_service::ipc::Client;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use space_view::{Capacity, RootMode, default_root_mode, node_bytes, partly_measured, shared_zero};
 
 const BG: Color = Color::from_rgb(0.055, 0.063, 0.09);
 const PANEL: Color = Color::from_rgb(0.075, 0.086, 0.12);
@@ -95,7 +103,7 @@ struct ScanSummary {
     root_id: Option<String>,
     root_path: ohmydisk_core::model::NativePath,
     #[serde(default)]
-    logical_bytes: u64,
+    space_accounting: Option<SpaceAccounting>,
     #[serde(default)]
     complete: bool,
     #[serde(default)]
@@ -112,7 +120,14 @@ struct Location {
     id: String,
     name: String,
     path: String,
-    bytes: u64,
+    bytes: Option<u64>,
+    measurement_partial: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+struct Preview {
+    items: Vec<Node>,
+    next_cursor: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -120,14 +135,32 @@ enum Response {
     Sources,
     Scans,
     StartedScan,
-    Poll { id: String },
-    Scan { epoch: u64 },
-    Children { epoch: u64, append: bool },
-    Descendants { epoch: u64 },
+    Poll {
+        id: String,
+    },
+    Scan {
+        epoch: u64,
+    },
+    Children {
+        epoch: u64,
+        append: bool,
+    },
+    Descendants {
+        epoch: u64,
+    },
+    Preview {
+        scan_epoch: u64,
+        hover_epoch: u64,
+        owner: String,
+    },
     PlanStarted(CleanupMode),
-    Plan { append: bool },
+    Plan {
+        append: bool,
+    },
     Executed,
-    CleanupResult { append: bool },
+    CleanupResult {
+        append: bool,
+    },
     Cancel,
     Reveal,
     Release(String),
@@ -164,6 +197,19 @@ struct ReviewPlan {
 enum Message {
     Connected(Result<Client, String>),
     Response(Response, Result<Value, String>),
+    Overview,
+    SetRootMode(RootMode),
+    ToggleCollector,
+    ShowSpaceInfo(sunburst::Target),
+    ChartHover(Option<sunburst::Target>),
+    PreviewReady {
+        epoch: u64,
+        owner: String,
+    },
+    ClearPreview {
+        epoch: u64,
+    },
+    PreviewPane(bool),
     PickFolder,
     FolderPicked(Option<PathBuf>),
     StartScan(PathBuf),
@@ -191,7 +237,10 @@ enum Message {
     MorePlan,
     MoreResults,
     DismissResults,
-    Reveal(String),
+    RevealInScan {
+        scan_id: String,
+        node_id: String,
+    },
     CancelJob,
     Tick,
     ClearBanner,
@@ -208,6 +257,17 @@ struct App {
     client: Option<Client>,
     data_dir: PathBuf,
     connecting: bool,
+    overview: bool,
+    root_mode: RootMode,
+    collector_expanded: bool,
+    chart_target: Option<sunburst::Target>,
+    space_info: Option<sunburst::Target>,
+    preview_owner: Option<String>,
+    preview_cache: HashMap<String, Preview>,
+    preview_epoch: u64,
+    preview_loading: bool,
+    preview_error: Option<String>,
+    preview_pane_hover: bool,
     sources: Vec<Volume>,
     scans: Vec<ScanSummary>,
     scan: Option<ScanSummary>,
@@ -246,6 +306,17 @@ impl App {
                 client: None,
                 data_dir,
                 connecting: true,
+                overview: true,
+                root_mode: RootMode::Directory,
+                collector_expanded: false,
+                chart_target: None,
+                space_info: None,
+                preview_owner: None,
+                preview_cache: HashMap::new(),
+                preview_epoch: 0,
+                preview_loading: false,
+                preview_error: None,
+                preview_pane_hover: false,
                 sources: Vec::new(),
                 scans: Vec::new(),
                 scan: None,
@@ -281,9 +352,15 @@ impl App {
     fn connect(path: PathBuf) -> Task<Message> {
         Task::perform(
             async move {
-                Client::connect_or_spawn(path)
+                let client = Client::connect_or_spawn(path)
                     .await
-                    .map_err(|e| e.to_string())
+                    .map_err(|error| error.to_string())?;
+                let capabilities = client
+                    .call("get_capabilities", json!({}))
+                    .await
+                    .map_err(|error| format!("无法读取后台服务能力：{error}"))?;
+                require_occupancy_backend(&capabilities)?;
+                Ok(client)
             },
             Message::Connected,
         )
@@ -309,11 +386,64 @@ impl App {
         ])
     }
     fn subscription(&self) -> Subscription<Message> {
-        iced::time::every(Duration::from_millis(650)).map(|_| Message::Tick)
+        if self.active.is_some() {
+            iced::time::every(Duration::from_millis(650)).map(|_| Message::Tick)
+        } else {
+            Subscription::none()
+        }
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::Overview => {
+                self.overview = true;
+                self.reset_preview();
+                return self.reload();
+            }
+            Message::SetRootMode(mode) => {
+                if self.is_root() && self.capacity().is_some() {
+                    self.root_mode = mode;
+                    self.space_info = None;
+                    self.reset_preview();
+                    self.rebuild_chart();
+                }
+            }
+            Message::ToggleCollector => self.collector_expanded = !self.collector_expanded,
+            Message::ShowSpaceInfo(target) => {
+                self.space_info = if self.space_info.as_ref() == Some(&target) {
+                    None
+                } else {
+                    Some(target)
+                };
+                self.reset_preview();
+            }
+            Message::ChartHover(target) => return self.chart_hover(target),
+            Message::PreviewReady { epoch, owner } => {
+                if epoch == self.preview_epoch
+                    && self.preview_owner.as_ref() == Some(&owner)
+                    && !self.preview_cache.contains_key(&owner)
+                    && (self.chart_target.is_some() || self.preview_pane_hover)
+                {
+                    if let Some(scan) = &self.scan {
+                        return self.request("list_children", json!({"scan_id":scan.scan_id,"node_id":owner,"limit":100,"size_metric":"attributed"}),
+                            Response::Preview { scan_epoch:self.epoch, hover_epoch:epoch, owner });
+                    }
+                }
+            }
+            Message::ClearPreview { epoch } => {
+                if epoch == self.preview_epoch
+                    && self.chart_target.is_none()
+                    && !self.preview_pane_hover
+                {
+                    self.reset_preview();
+                }
+            }
+            Message::PreviewPane(entered) => {
+                self.preview_pane_hover = entered;
+                if !entered && self.chart_target.is_none() {
+                    self.reset_preview();
+                }
+            }
             Message::Connected(result) => {
                 self.connecting = false;
                 match result {
@@ -330,12 +460,36 @@ impl App {
                 return Self::connect(self.data_dir.clone());
             }
             Message::Response(response, result) => {
+                let response_epoch = match &response {
+                    Response::Scan { epoch }
+                    | Response::Children { epoch, .. }
+                    | Response::Descendants { epoch } => Some(*epoch),
+                    _ => None,
+                };
+                if response_epoch.is_some_and(|epoch| epoch != self.epoch) {
+                    return Task::none();
+                }
                 if let Response::Poll { .. } = &response {
                     self.polling = false;
                 }
                 match result {
                     Ok(value) => return self.receive(response, value),
                     Err(error) => {
+                        if let Response::Preview {
+                            scan_epoch,
+                            hover_epoch,
+                            owner,
+                        } = &response
+                        {
+                            if *scan_epoch == self.epoch
+                                && *hover_epoch == self.preview_epoch
+                                && self.preview_owner.as_ref() == Some(owner)
+                            {
+                                self.preview_loading = false;
+                                self.preview_error = Some(error);
+                            }
+                            return Task::none();
+                        }
                         self.banner = Some(error);
                         self.loading = false;
                         self.busy = false;
@@ -397,7 +551,7 @@ impl App {
                         (&self.scan, &self.location, &self.next_cursor)
                     {
                         self.loading = true;
-                        return self.request("list_children", json!({"scan_id":scan.scan_id,"node_id":location.id,"limit":100,"cursor":cursor}), Response::Children { epoch: self.epoch, append: true });
+                        return self.request("list_children", json!({"scan_id":scan.scan_id,"node_id":location.id,"limit":100,"cursor":cursor,"size_metric":"attributed"}), Response::Children { epoch: self.epoch, append: true });
                     }
                 }
             }
@@ -411,20 +565,23 @@ impl App {
                     }
                 } else if let Some(segment) = segment {
                     self.drag = None;
-                    if let Some(id) = segment.node_id {
-                        return self.navigate(&id, true);
-                    }
-                    if self
-                        .location
-                        .as_ref()
-                        .is_some_and(|location| location.id == segment.owner_id)
-                    {
-                        self.banner = Some(format!(
-                            "灰色扇区聚合了 {} 的较小项目或尚未载入的成员。右侧列表可分页查看，聚合扇区不能加入清理。",
-                            bytes(segment.bytes)
-                        ));
-                    } else {
-                        return self.navigate(&segment.owner_id, true);
+                    match segment.target {
+                        sunburst::Target::Node(id) => return self.navigate(&id, true),
+                        sunburst::Target::Aggregate { owner_id } => {
+                            if self
+                                .location
+                                .as_ref()
+                                .is_some_and(|location| location.id == owner_id)
+                            {
+                                self.banner = Some(
+                                    "右侧列表包含较小项目，可继续载入。聚合扇区不能加入收集区。"
+                                        .into(),
+                                );
+                            } else {
+                                return self.navigate(&owner_id, true);
+                            }
+                        }
+                        target => self.space_info = Some(target),
                     }
                 } else {
                     self.drag = None;
@@ -507,14 +664,12 @@ impl App {
                 self.result = None;
                 self.result_items.clear();
             }
-            Message::Reveal(id) => {
-                if let Some(scan) = &self.scan {
-                    return self.request(
-                        "reveal_node",
-                        json!({"scan_id":scan.scan_id,"node_id":id}),
-                        Response::Reveal,
-                    );
-                }
+            Message::RevealInScan { scan_id, node_id } => {
+                return self.request(
+                    "reveal_node",
+                    json!({"scan_id":scan_id,"node_id":node_id}),
+                    Response::Reveal,
+                );
             }
             Message::CancelJob => {
                 if let Some(job) = &mut self.active {
@@ -588,13 +743,13 @@ impl App {
                         if let Some(active) = &mut self.active {
                             active.state = job.state.clone();
                             active.progress = format!(
-                                "{} · {} 个文件 · {} 个文件夹 · 逻辑大小 {} · {} 秒",
+                                "{} · {} 个文件 · {} 个文件夹 · {} 秒 · {}",
                                 phase_label(&job.progress.phase),
                                 job.progress.files,
                                 job.progress.directories,
-                                bytes(job.progress.bytes),
                                 ohmydisk_core::model::now_ms().saturating_sub(job.created_at)
-                                    / 1000
+                                    / 1000,
+                                crop(&job.progress.current_path, 56)
                             );
                         }
                         if !terminal {
@@ -657,6 +812,7 @@ impl App {
                 match serde_json::from_value::<ScanSummary>(value) {
                     Ok(scan) => {
                         let Some(root) = scan.root_id.clone() else {
+                            self.overview = true;
                             self.loading = false;
                             let status = scan_size_summary(&scan);
                             if let Some(id) = scan.job_id {
@@ -683,7 +839,14 @@ impl App {
                             id: root,
                             name: path_name(&scan.root_path.display),
                             path: scan.root_path.display.clone(),
-                            bytes: scan.logical_bytes,
+                            bytes: scan
+                                .space_accounting
+                                .as_ref()
+                                .and_then(Capacity::reconciled)
+                                .map(|space| space.attributed),
+                            measurement_partial: scan.space_accounting.as_ref().is_some_and(
+                                |accounting| accounting.measurement_status != "complete",
+                            ),
                         };
                         if scan.known_stale && self.active.is_none() {
                             if let Some(id) = &scan.refresh_job_id {
@@ -695,6 +858,12 @@ impl App {
                                 });
                             }
                         }
+                        self.root_mode = default_root_mode(
+                            &scan.root_path.display,
+                            &self.sources,
+                            cfg!(target_os = "windows"),
+                        );
+                        self.breadcrumbs.clear();
                         self.history = vec![location.clone()];
                         self.history_index = 0;
                         self.scan = Some(scan);
@@ -706,6 +875,31 @@ impl App {
                     }
                 }
             }
+            Response::Preview {
+                scan_epoch,
+                hover_epoch,
+                owner,
+            } if scan_epoch == self.epoch => {
+                let preview = Preview {
+                    items: decode_items(&value),
+                    next_cursor: string(&value, "next_cursor"),
+                };
+                if self.preview_cache.len() >= 64 {
+                    self.preview_cache.retain(|id, _| {
+                        self.preview_owner.as_ref() == Some(id)
+                            || self
+                                .location
+                                .as_ref()
+                                .is_some_and(|location| &location.id == id)
+                    });
+                }
+                self.preview_cache.insert(owner.clone(), preview);
+                if hover_epoch == self.preview_epoch && self.preview_owner.as_ref() == Some(&owner)
+                {
+                    self.preview_loading = false;
+                    self.preview_error = None;
+                }
+            }
             Response::Children { epoch, append } if epoch == self.epoch => {
                 self.loading = false;
                 let nodes: Vec<Node> = decode_items(&value);
@@ -715,6 +909,15 @@ impl App {
                     self.children = nodes;
                 }
                 self.next_cursor = string(&value, "next_cursor");
+                if let Some(location) = &self.location {
+                    self.preview_cache.insert(
+                        location.id.clone(),
+                        Preview {
+                            items: self.children.clone(),
+                            next_cursor: self.next_cursor.clone(),
+                        },
+                    );
+                }
                 self.rebuild_chart();
             }
             Response::Descendants { epoch } if epoch == self.epoch => {
@@ -841,7 +1044,9 @@ impl App {
     fn open_scan(&mut self, id: String) -> Task<Message> {
         self.epoch += 1;
         self.loading = true;
-        self.hover = None;
+        self.overview = false;
+        self.reset_preview();
+        self.preview_cache.clear();
         self.request(
             "get_scan",
             json!({"scan_id": id}),
@@ -849,10 +1054,19 @@ impl App {
         )
     }
     fn find_node(&self, id: &str) -> Option<&Node> {
+        let collection_is_current = self
+            .scan
+            .as_ref()
+            .is_some_and(|scan| self.draft_scan_id.as_ref() == Some(&scan.scan_id));
         self.children
             .iter()
             .chain(self.chart_nodes.iter())
-            .chain(self.collection.iter())
+            .chain(
+                self.preview_cache
+                    .values()
+                    .flat_map(|preview| preview.items.iter()),
+            )
+            .chain(self.collection.iter().filter(|_| collection_is_current))
             .find(|node| node.id == id)
     }
     fn navigate(&mut self, id: &str, record: bool) -> Task<Message> {
@@ -865,7 +1079,8 @@ impl App {
                 id: node.id.clone(),
                 name: node.name.clone(),
                 path: node.path.display.clone(),
-                bytes: node.logical_bytes,
+                bytes: node_bytes(node),
+                measurement_partial: partly_measured(node),
             }
         } else if let Some(location) = self.breadcrumbs.iter().find(|location| location.id == id) {
             location.clone()
@@ -915,7 +1130,8 @@ impl App {
                         id: node.id.clone(),
                         name: node.name.clone(),
                         path: node.path.display.clone(),
-                        bytes: node.logical_bytes,
+                        bytes: node_bytes(node),
+                        measurement_partial: partly_measured(node),
                     });
                     parent = node.parent_id.clone();
                 } else {
@@ -930,6 +1146,8 @@ impl App {
             }
             self.breadcrumbs = chain;
         }
+        self.reset_preview();
+        self.space_info = None;
         self.location = Some(location.clone());
         self.children.clear();
         self.chart_nodes.clear();
@@ -939,9 +1157,14 @@ impl App {
         self.loading = true;
         self.epoch += 1;
         let epoch = self.epoch;
+        if self.capacity().is_none() {
+            self.loading = false;
+            self.rebuild_chart();
+            return Task::none();
+        }
         Task::batch([
-            self.request("list_children", json!({"scan_id":scan_id,"node_id":location.id,"limit":100}), Response::Children { epoch, append:false }),
-            self.request("query_nodes", json!({"scan_id":scan_id,"scope_node_id":location.id,"descendants":true,"limit":500}), Response::Descendants { epoch }),
+            self.request("list_children", json!({"scan_id":scan_id,"node_id":location.id,"limit":100,"size_metric":"attributed"}), Response::Children { epoch, append:false }),
+            self.request("query_nodes", json!({"scan_id":scan_id,"scope_node_id":location.id,"descendants":true,"limit":500,"size_metric":"attributed"}), Response::Descendants { epoch }),
         ])
     }
     fn rebuild_chart(&mut self) {
@@ -957,8 +1180,20 @@ impl App {
             .take(500)
             .cloned()
             .collect();
-        nodes.sort_by(|a, b| b.logical_bytes.cmp(&a.logical_bytes));
-        self.segments = sunburst::layout(&location.id, location.bytes, &nodes);
+        nodes.sort_by(|a, b| node_bytes(b).cmp(&node_bytes(a)));
+        self.segments = if let Some(capacity) = self.capacity() {
+            if self.display_mode() == RootMode::Volume {
+                sunburst::capacity_layout(&location.id, capacity, &nodes)
+            } else if let Some(amount) = location.bytes.filter(|amount| *amount <= capacity.total) {
+                sunburst::layout(&location.id, amount, &nodes)
+            } else {
+                Vec::new()
+            }
+        } else if let Some((total, available)) = self.observed_totals() {
+            sunburst::overview_layout(total, available)
+        } else {
+            Vec::new()
+        };
     }
     fn collect(&mut self, id: &str) {
         if self
@@ -1009,791 +1244,6 @@ impl App {
         self.collection.push(node);
     }
 
-    fn view(&self) -> Element<'_, Message> {
-        let header = row![
-            row![
-                text("◉").size(29).color(ACCENT),
-                text("ohMyDisk").size(24),
-                text("空间，清晰可见").size(12).color(MUTED)
-            ]
-            .spacing(12)
-            .align_y(Alignment::Center),
-            Space::new().width(Length::Fill),
-            text(if self.connecting {
-                "正在连接本地服务…"
-            } else if self.client.is_some() {
-                "本地分析 · 文件留在你的设备"
-            } else {
-                "本地服务未连接"
-            })
-            .size(12)
-            .color(MUTED),
-            button(text("＋ 选择文件夹").size(13))
-                .padding([10, 16])
-                .style(accent_button)
-                .on_press_maybe(
-                    self.client
-                        .as_ref()
-                        .filter(|_| self.active.is_none())
-                        .map(|_| Message::PickFolder)
-                ),
-        ]
-        .spacing(22)
-        .padding([18, 24])
-        .align_y(Alignment::Center);
-        let mut content = column![header, rule::horizontal(1)].spacing(0);
-        if let Some(banner) = &self.banner {
-            content = content.push(
-                container(
-                    row![
-                        text(banner).size(12).color(WARNING),
-                        Space::new().width(Length::Fill),
-                        button("×")
-                            .style(quiet_button)
-                            .on_press(Message::ClearBanner)
-                    ]
-                    .align_y(Alignment::Center)
-                    .spacing(12),
-                )
-                .padding([8, 20])
-                .width(Length::Fill)
-                .style(|_| panel_style(Color::from_rgb(0.17, 0.13, 0.105))),
-            );
-        }
-        let workspace = row![
-            self.sidebar(),
-            column![self.navigation(), self.analysis()]
-                .spacing(0)
-                .width(Length::Fill)
-        ]
-        .spacing(0)
-        .height(Length::Fill);
-        content = content.push(workspace).push(self.collector());
-        let main: Element<'_, Message> = container(content)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .style(|_| panel_style(BG))
-            .into();
-        if let Some(plan) = &self.review {
-            stack![
-                main,
-                iced::widget::opaque(
-                    container(self.review_view(plan))
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .center_x(Length::Fill)
-                        .center_y(Length::Fill)
-                        .style(|_| panel_style(Color::from_rgba(0.015, 0.02, 0.035, 0.88)))
-                )
-            ]
-            .into()
-        } else if self.result.is_some() {
-            stack![
-                main,
-                iced::widget::opaque(
-                    container(self.result_view())
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .center_x(Length::Fill)
-                        .center_y(Length::Fill)
-                        .style(|_| panel_style(Color::from_rgba(0.015, 0.02, 0.035, 0.88)))
-                )
-            ]
-            .into()
-        } else {
-            main
-        }
-    }
-
-    fn sidebar(&self) -> Element<'_, Message> {
-        let mut items = column![text("扫描对象").size(11).color(MUTED)].spacing(12);
-        for source in &self.sources {
-            let used = source.total_bytes.saturating_sub(source.available_bytes);
-            let ratio = if source.total_bytes > 0 {
-                used as f32 / source.total_bytes as f32
-            } else {
-                0.0
-            };
-            let mut source_content = column![
-                row![
-                    text("▣").size(18).color(ACCENT),
-                    text(crop(&source.name, 22)).size(14),
-                    Space::new().width(Length::Fill)
-                ]
-                .spacing(10)
-                .align_y(Alignment::Center),
-                text(format!(
-                    "{} 可用 / {}",
-                    bytes(source.available_bytes),
-                    bytes(source.total_bytes)
-                ))
-                .size(11)
-                .color(MUTED),
-                iced::widget::progress_bar(0.0..=1.0, ratio).girth(4),
-                text(crop(&source.mount_path.display, 28))
-                    .size(10)
-                    .color(MUTED),
-            ]
-            .spacing(10);
-            if let Some(hint) = source_hint(source) {
-                source_content = source_content.push(text(hint).size(10).color(MUTED));
-            }
-            let path = source.mount_path.to_path().ok();
-            items = items.push(
-                button(source_content)
-                    .width(Length::Fill)
-                    .padding(14)
-                    .style(card_button)
-                    .on_press_maybe(
-                        path.filter(|_| self.active.is_none())
-                            .map(Message::StartScan),
-                    ),
-            );
-        }
-        if self.sources.is_empty() {
-            items = items.push(
-                text(if self.connecting {
-                    "正在发现磁盘…"
-                } else {
-                    "选择文件夹开始分析"
-                })
-                .size(12)
-                .color(MUTED),
-            );
-        }
-        if cfg!(target_os = "macos")
-            && self
-                .sources
-                .iter()
-                .any(|source| source.mount_path.display == "/")
-            && self
-                .sources
-                .iter()
-                .any(|source| source.mount_path.display == "/System/Volumes/Data")
-        {
-            items = items.push(
-                text("系统与数据入口共享 APFS 容器空间，容量请勿相加。")
-                    .size(10)
-                    .color(MUTED),
-            );
-        }
-        items = items.push(Space::new().height(14)).push(row![
-            text("已保存的扫描").size(11).color(MUTED),
-            Space::new().width(Length::Fill),
-            text(self.scans.len().to_string()).size(11).color(MUTED)
-        ]);
-        for scan in &self.scans {
-            let selected = self
-                .scan
-                .as_ref()
-                .is_some_and(|current| current.scan_id == scan.scan_id);
-            let name = path_name(&scan.root_path.display);
-            let info = column![
-                text(crop(&name, 20))
-                    .size(13)
-                    .color(if selected { WHITE } else { MUTED }),
-                text(scan_size_summary(scan)).size(10).color(MUTED),
-            ]
-            .spacing(6);
-            items = items.push(
-                row![
-                    button(info)
-                        .padding([12, 10])
-                        .width(Length::Fill)
-                        .style(move |theme, status| if selected {
-                            selected_button(theme, status)
-                        } else {
-                            quiet_button(theme, status)
-                        })
-                        .on_press(Message::OpenScan(scan.scan_id.clone())),
-                    button(text("×").size(15))
-                        .padding(7)
-                        .style(quiet_button)
-                        .on_press(Message::CloseScan(scan.scan_id.clone()))
-                ]
-                .spacing(2)
-                .align_y(Alignment::Center),
-            );
-        }
-        let mut sidebar = column![
-            scrollable(items).height(Length::Fill),
-            rule::horizontal(1),
-            text(
-                "逻辑大小可超过卷容量\n不等于实际占用或可释放空间\n不跟随链接 · 重复目录不重复遍历"
-            )
-            .size(10)
-            .color(MUTED)
-        ]
-        .spacing(18);
-        if self.client.is_none() && !self.connecting {
-            sidebar = sidebar.push(
-                button("重新连接")
-                    .on_press(Message::Retry)
-                    .style(accent_button),
-            );
-        }
-        container(sidebar)
-            .padding([24, 18])
-            .width(230)
-            .height(Length::Fill)
-            .style(|_| panel_style(PANEL))
-            .into()
-    }
-
-    fn navigation(&self) -> Element<'_, Message> {
-        let controls = row![
-            button("‹")
-                .padding([7, 12])
-                .style(quiet_button)
-                .on_press_maybe((self.history_index > 0).then_some(Message::Back)),
-            button("›")
-                .padding([7, 12])
-                .style(quiet_button)
-                .on_press_maybe(
-                    (self.history_index + 1 < self.history.len()).then_some(Message::Forward)
-                ),
-            button("↑")
-                .padding([7, 12])
-                .style(quiet_button)
-                .on_press_maybe((self.breadcrumbs.len() > 1).then_some(Message::Up)),
-        ]
-        .spacing(3);
-        let mut path = Row::new().spacing(3).align_y(Alignment::Center);
-        if self.breadcrumbs.is_empty() {
-            path = path.push(text("选择一个位置，看看空间去了哪里").size(12).color(MUTED));
-        }
-        let skip = self.breadcrumbs.len().saturating_sub(4);
-        for (index, location) in self.breadcrumbs.iter().enumerate().skip(skip) {
-            if index > skip {
-                path = path.push(text("/").size(13).color(MUTED));
-            }
-            path = path.push(
-                button(text(crop(&location.name, 22)).size(12))
-                    .padding([7, 5])
-                    .style(quiet_button)
-                    .on_press(Message::Navigate(location.id.clone())),
-            );
-        }
-        container(
-            row![
-                controls,
-                path,
-                Space::new().width(Length::Fill),
-                button(text("↻ 重新扫描").size(12))
-                    .padding([8, 12])
-                    .style(quiet_button)
-                    .on_press_maybe(
-                        self.scan
-                            .as_ref()
-                            .filter(|_| self.active.is_none())
-                            .map(|_| Message::Rescan)
-                    )
-            ]
-            .spacing(14)
-            .align_y(Alignment::Center),
-        )
-        .padding([14, 20])
-        .width(Length::Fill)
-        .style(|_| panel_style(BG))
-        .into()
-    }
-
-    fn analysis(&self) -> Element<'_, Message> {
-        if self.scan.is_none() {
-            let mut empty = column![
-                text("让每一份空间，都有迹可循。").size(30).color(WHITE),
-                text("选择磁盘或文件夹，按大小探索你的文件。\n先收集，再核对；清理由你决定。")
-                    .size(15)
-                    .color(MUTED)
-                    .line_height(1.8),
-                button(text("选择文件夹开始").size(14))
-                    .padding([13, 24])
-                    .style(accent_button)
-                    .on_press_maybe(self.client.as_ref().map(|_| Message::PickFolder)),
-                text("支持隐藏项目 · 本地扫描 · 可随时请求停止")
-                    .size(11)
-                    .color(MUTED),
-            ]
-            .spacing(24)
-            .align_x(Alignment::Center);
-            if let Some(job) = &self.active {
-                empty = empty.push(
-                    container(
-                        column![
-                            text(job_label(&job.work)).size(16).color(ACCENT),
-                            text(format!("{} · {}", state_label(&job.state), job.progress))
-                                .size(12)
-                                .color(MUTED),
-                            button(
-                                text(if job.state == "cancel_requested" {
-                                    "正在停止…"
-                                } else {
-                                    "请求停止扫描"
-                                })
-                                .size(12)
-                            )
-                            .padding([10, 18])
-                            .style(quiet_button)
-                            .on_press_maybe(
-                                (job.state != "cancel_requested").then_some(Message::CancelJob)
-                            ),
-                        ]
-                        .spacing(15)
-                        .align_x(Alignment::Center),
-                    )
-                    .padding(24)
-                    .style(|_| rounded_style(CARD, 14.0)),
-                );
-            }
-            return container(empty)
-                .center_x(Length::Fill)
-                .center_y(Length::Fill)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into();
-        }
-        let scan = self.scan.as_ref().unwrap();
-        let focus = self.hover.as_deref().and_then(|id| self.find_node(id));
-        let title = focus
-            .map(|node| node.name.clone())
-            .or_else(|| self.location.as_ref().map(|location| location.name.clone()))
-            .unwrap_or_default();
-        let amount = focus
-            .map(|node| node.logical_bytes)
-            .or_else(|| self.location.as_ref().map(|location| location.bytes))
-            .unwrap_or(0);
-        let current_path = focus
-            .map(|node| node.path.display.as_str())
-            .or_else(|| {
-                self.location
-                    .as_ref()
-                    .map(|location| location.path.as_str())
-            })
-            .unwrap_or("");
-        let collected = self
-            .collection
-            .iter()
-            .map(|node| node.id.clone())
-            .collect::<Vec<_>>();
-        let graph = canvas(sunburst::Sunburst {
-            segments: &self.segments,
-            hover: self.hover.as_deref(),
-            collected,
-        })
-        .width(Length::Fill)
-        .height(Length::Fill);
-        let center = container(
-            column![
-                text("逻辑大小").size(10).color(MUTED),
-                text(bytes(amount)).size(27).color(WHITE),
-                text(crop(&title, 18)).size(11).color(MUTED)
-            ]
-            .spacing(8)
-            .align_x(Alignment::Center),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .center_x(Length::Fill)
-        .center_y(Length::Fill);
-        let mut chart = column![
-            row![
-                column![
-                    text(crop(
-                        &self
-                            .location
-                            .as_ref()
-                            .map(|l| l.name.as_str())
-                            .unwrap_or("空间分析"),
-                        28
-                    ))
-                    .size(22),
-                    text(if self.loading {
-                        "正在载入目录…"
-                    } else {
-                        "悬停详情 · 点击下钻 · 最多 4 层 / 500 节点 · 灰色为聚合"
-                    })
-                    .size(11)
-                    .color(MUTED)
-                ]
-                .spacing(8),
-                Space::new().width(Length::Fill),
-                pill(
-                    if scan.known_stale {
-                        "旧快照 · 正在刷新"
-                    } else if scan.complete {
-                        "扫描快照"
-                    } else {
-                        "扫描不完整"
-                    },
-                    if scan.complete && !scan.known_stale {
-                        GREEN
-                    } else {
-                        WARNING
-                    }
-                )
-            ]
-            .spacing(12)
-            .align_y(Alignment::Center),
-            stack![graph, center],
-            container(
-                row![
-                    column![
-                        text(crop(&title, 40)).size(14),
-                        text(crop(current_path, 78)).size(11).color(MUTED)
-                    ]
-                    .spacing(7)
-                    .width(Length::Fill),
-                    button(text("＋ 加入收集").size(12))
-                        .padding([10, 14])
-                        .style(accent_button)
-                        .on_press_maybe(
-                            focus
-                                .filter(|node| node.complete)
-                                .map(|node| Message::Collect(node.id.clone()))
-                        )
-                ]
-                .spacing(14)
-                .align_y(Alignment::Center)
-            )
-            .padding(16)
-            .width(Length::Fill)
-            .style(|_| rounded_style(CARD, 12.0)),
-            text(format!(
-                "逻辑大小 {} · 已选 {} · 未选 {} · {}",
-                bytes(scan.logical_bytes),
-                bytes(self.selected_bytes_for_current_scan()),
-                bytes(
-                    scan.logical_bytes
-                        .saturating_sub(self.selected_bytes_for_current_scan())
-                ),
-                timestamp(scan.created_at)
-            ))
-            .size(10)
-            .color(MUTED),
-        ]
-        .spacing(16)
-        .padding([12, 26])
-        .width(Length::Fill)
-        .height(Length::Fill);
-        if let Some(job) = &self.active {
-            chart = chart.push(
-                container(
-                    row![
-                        column![
-                            text(job_label(&job.work)).size(12).color(ACCENT),
-                            text(format!("{} · {}", state_label(&job.state), job.progress))
-                                .size(11)
-                                .color(MUTED)
-                        ]
-                        .spacing(5)
-                        .width(Length::Fill),
-                        button(
-                            text(if job.state == "cancel_requested" {
-                                "正在停止…"
-                            } else {
-                                "请求停止"
-                            })
-                            .size(11)
-                        )
-                        .padding(8)
-                        .style(quiet_button)
-                        .on_press_maybe(
-                            (job.state != "cancel_requested").then_some(Message::CancelJob)
-                        )
-                    ]
-                    .spacing(10)
-                    .align_y(Alignment::Center),
-                )
-                .padding(12)
-                .style(|_| rounded_style(PANEL, 10.0)),
-            );
-        } else if let Some(refresh) = &scan.refresh_job_id {
-            chart = chart.push(
-                text(format!("刷新作业：{}", crop(refresh, 16)))
-                    .size(10)
-                    .color(MUTED),
-            );
-        }
-        row![chart, self.directory_list()]
-            .spacing(0)
-            .height(Length::Fill)
-            .into()
-    }
-
-    fn directory_list(&self) -> Element<'_, Message> {
-        let mut list = Column::new().spacing(5);
-        for (index, node) in self.children.iter().enumerate() {
-            let hovered = self.hover.as_deref() == Some(&node.id);
-            let selected = self.collection.iter().any(|entry| node_covers(entry, node));
-            let color = sunburst::color(index, 0);
-            let kind = match node.kind {
-                NodeKind::Directory => "目录",
-                NodeKind::File => "文件",
-                NodeKind::Symlink => "链接",
-                NodeKind::Other => "其他",
-            };
-            let label = column![
-                row![
-                    text(if node.kind == NodeKind::Directory {
-                        "▸"
-                    } else {
-                        "·"
-                    })
-                    .size(15)
-                    .color(color),
-                    text(crop(&node.name, 24))
-                        .size(12)
-                        .color(if selected { MUTED } else { WHITE }),
-                    Space::new().width(Length::Fill),
-                    text(bytes(node.logical_bytes)).size(11).color(MUTED)
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-                row![
-                    text(format!(
-                        "{kind}{}{}",
-                        if !node.complete { " · 不完整" } else { "" },
-                        if selected { " · 已收集" } else { "" }
-                    ))
-                    .size(10)
-                    .color(MUTED),
-                    Space::new().width(Length::Fill),
-                    text(if node.kind == NodeKind::Directory {
-                        "点击进入"
-                    } else {
-                        ""
-                    })
-                    .size(10)
-                    .color(MUTED)
-                ]
-                .spacing(6),
-            ]
-            .spacing(7);
-            let body = row![
-                button(label)
-                    .width(Length::Fill)
-                    .padding(11)
-                    .style(move |theme, status| if hovered {
-                        selected_button(theme, status)
-                    } else {
-                        quiet_button(theme, status)
-                    })
-                    .on_press(Message::Navigate(node.id.clone())),
-                button(text(if selected { "✓" } else { "＋" }).size(17))
-                    .padding([10, 7])
-                    .style(quiet_button)
-                    .on_press_maybe(
-                        (!selected && node.complete).then(|| Message::Collect(node.id.clone()))
-                    )
-            ]
-            .spacing(2)
-            .align_y(Alignment::Center);
-            list = list.push(
-                mouse_area(body)
-                    .on_enter(Message::Hover(Some(node.id.clone())))
-                    .on_exit(Message::Hover(None)),
-            );
-        }
-        if self.children.is_empty() {
-            list = list.push(
-                container(
-                    text(if self.loading {
-                        "正在读取目录…"
-                    } else {
-                        "此目录没有可列出的子项"
-                    })
-                    .size(12)
-                    .color(MUTED),
-                )
-                .padding(15),
-            );
-        }
-        if self.next_cursor.is_some() {
-            list = list.push(
-                button(
-                    text(if self.loading {
-                        "载入中…"
-                    } else if self.children.len() >= 500 {
-                        "下一页（保留最近 500 项）"
-                    } else {
-                        "载入更多项目"
-                    })
-                    .size(12),
-                )
-                .width(Length::Fill)
-                .padding(12)
-                .style(card_button)
-                .on_press_maybe((!self.loading).then_some(Message::MoreChildren)),
-            );
-        }
-        let detail = self.hover.as_deref().and_then(|id| self.find_node(id));
-        let mut pane = column![
-            row![
-                text("按大小排列").size(13),
-                Space::new().width(Length::Fill),
-                text(format!(
-                    "{} 项{}",
-                    self.children.len(),
-                    if self.next_cursor.is_some() {
-                        "＋"
-                    } else {
-                        ""
-                    }
-                ))
-                .size(10)
-                .color(MUTED)
-            ]
-            .spacing(10)
-            .align_y(Alignment::Center),
-            rule::horizontal(1),
-            scrollable(list).height(Length::Fill)
-        ]
-        .spacing(14);
-        if let Some(node) = detail {
-            pane = pane
-                .push(rule::horizontal(1))
-                .push(text(crop(&node.path.display, 74)).size(10).color(MUTED))
-                .push(
-                    button(text("在文件管理器中显示").size(11))
-                        .padding(9)
-                        .style(quiet_button)
-                        .on_press(Message::Reveal(node.id.clone())),
-                );
-        }
-        container(pane)
-            .padding([22, 15])
-            .width(335)
-            .height(Length::Fill)
-            .style(|_| panel_style(PANEL))
-            .into()
-    }
-
-    fn selected_bytes_for_current_scan(&self) -> u64 {
-        if self.scan.as_ref().map(|scan| &scan.scan_id) == self.draft_scan_id.as_ref() {
-            self.collection
-                .iter()
-                .map(|node| node.logical_bytes)
-                .fold(0_u64, u64::saturating_add)
-        } else {
-            0
-        }
-    }
-
-    fn collector(&self) -> Element<'_, Message> {
-        let total = self
-            .collection
-            .iter()
-            .map(|node| node.logical_bytes)
-            .fold(0_u64, u64::saturating_add);
-        let mut chips = Row::new().spacing(10).align_y(Alignment::Center);
-        if self.collection.is_empty() {
-            chips = chips.push(
-                text("把图表中的项目拖到这里，或使用「＋ 加入收集」。收集只保存选择。")
-                    .size(12)
-                    .color(MUTED),
-            );
-        }
-        for node in &self.collection {
-            chips = chips.push(
-                container(
-                    row![
-                        column![
-                            text(crop(&node.name, 21)).size(12),
-                            text(bytes(node.logical_bytes)).size(10).color(MUTED)
-                        ]
-                        .spacing(5),
-                        button(text("×").size(15))
-                            .padding(5)
-                            .style(quiet_button)
-                            .on_press(Message::Remove(node.id.clone()))
-                    ]
-                    .spacing(12)
-                    .align_y(Alignment::Center),
-                )
-                .padding([10, 13])
-                .style(|_| rounded_style(CARD, 10.0)),
-            );
-        }
-        let enabled = !self.collection.is_empty() && self.active.is_none() && !self.busy;
-        let title = row![
-            text("清理收集区").size(15),
-            pill(format!("{} 项", self.collection.len()), MUTED),
-            text("快照总量不会随选择减少").size(11).color(MUTED),
-            Space::new().width(Length::Fill),
-            button(text("清空").size(11))
-                .padding(6)
-                .style(quiet_button)
-                .on_press_maybe(
-                    (!self.collection.is_empty() && !self.busy).then_some(Message::ClearCollection)
-                )
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center);
-        let actions = column![
-            text(bytes(total)).size(24),
-            text("选中项目的逻辑大小").size(10).color(MUTED),
-            row![
-                button(text("永久删除…").size(11))
-                    .padding([11, 12])
-                    .style(quiet_button)
-                    .on_press_maybe(enabled.then_some(Message::Prepare(CleanupMode::Permanent))),
-                button(
-                    text(if self.busy {
-                        "正在准备…"
-                    } else {
-                        "移入回收站…"
-                    })
-                    .size(12)
-                )
-                .padding([11, 16])
-                .style(accent_button)
-                .on_press_maybe(enabled.then_some(Message::Prepare(CleanupMode::Trash)))
-            ]
-            .spacing(6)
-        ]
-        .spacing(7)
-        .align_x(Alignment::End);
-        let body = column![
-            title,
-            row![
-                scrollable(chips)
-                    .direction(scrollable::Direction::Horizontal(
-                        scrollable::Scrollbar::default()
-                    ))
-                    .width(Length::Fill),
-                actions
-            ]
-            .spacing(24)
-            .align_y(Alignment::Center)
-        ]
-        .spacing(16);
-        mouse_area(
-            container(body)
-                .padding([18, 24])
-                .width(Length::Fill)
-                .style(move |_| {
-                    let mut style = panel_style(if self.collector_hover && self.drag.is_some() {
-                        Color::from_rgb(0.15, 0.16, 0.27)
-                    } else {
-                        PANEL
-                    });
-                    style.border = Border {
-                        color: if self.collector_hover && self.drag.is_some() {
-                            ACCENT
-                        } else {
-                            Color::from_rgb(0.15, 0.17, 0.23)
-                        },
-                        width: 1.0,
-                        ..Border::default()
-                    };
-                    style
-                }),
-        )
-        .on_enter(Message::CollectorHover(true))
-        .on_exit(Message::CollectorHover(false))
-        .into()
-    }
-
     fn review_view<'a>(&'a self, plan: &'a ReviewPlan) -> Element<'a, Message> {
         let permanent = plan.mode == CleanupMode::Permanent;
         let mut targets = Column::new().spacing(9);
@@ -1804,7 +1254,9 @@ impl App {
                         row![
                             text(crop(&node.name, 64)).size(13),
                             Space::new().width(Length::Fill),
-                            text(bytes(node.logical_bytes)).size(12).color(MUTED)
+                            text(format!("文件逻辑大小 {}", bytes(node.logical_bytes)))
+                                .size(12)
+                                .color(MUTED)
                         ]
                         .spacing(12),
                         text(&node.path.display).size(11).color(MUTED)
@@ -1877,7 +1329,7 @@ impl App {
                     if permanent { WARNING } else { GREEN }
                 ),
                 text(format!(
-                    "{} 个目标 · {}",
+                    "{} 个目标 · 文件逻辑总量 {}",
                     plan.targets.len(),
                     bytes(plan.bytes)
                 ))
@@ -2049,6 +1501,42 @@ impl App {
     }
 }
 
+fn require_occupancy_backend(capabilities: &Value) -> Result<(), String> {
+    if capabilities
+        .get("size_metrics")
+        .and_then(Value::as_array)
+        .is_some_and(|metrics| {
+            metrics
+                .iter()
+                .any(|metric| metric.as_str() == Some("attributed"))
+        })
+    {
+        Ok(())
+    } else {
+        Err("连接的是旧后台服务，暂不支持占用测量。请在当前作业结束后退出旧版 GUI 和 MCP 客户端，等待后台空闲退出，再点「重新连接」。".into())
+    }
+}
+
+#[cfg(test)]
+mod backend_tests {
+    use super::*;
+    #[test]
+    fn connection_requires_the_occupancy_metric_without_requiring_a_native_provider() {
+        assert!(
+            require_occupancy_backend(&json!({"size_metrics":["logical","allocated"]}))
+                .unwrap_err()
+                .contains("旧后台服务")
+        );
+        assert!(require_occupancy_backend(&json!({})).is_err());
+        assert!(
+            require_occupancy_backend(
+                &json!({"size_metrics":["attributed"],"provider":"unsupported"})
+            )
+            .is_ok()
+        );
+    }
+}
+
 fn source_hint(source: &Volume) -> Option<&'static str> {
     if cfg!(target_os = "macos") {
         match source.mount_path.display.as_str() {
@@ -2079,7 +1567,17 @@ fn scan_size_summary(scan: &ScanSummary) -> String {
     } else {
         "部分结果"
     };
-    format!("逻辑 {} · {state}", bytes(scan.logical_bytes))
+    match scan
+        .space_accounting
+        .as_ref()
+        .and_then(Capacity::reconciled)
+    {
+        Some(space) => format!(
+            "已用 / 保留 {} · {state}",
+            bytes(space.total - space.available)
+        ),
+        None => format!("需要重新测量占用 · {state}"),
+    }
 }
 
 fn observed_capacity(value: Option<&Value>, root: &str) -> Option<u64> {

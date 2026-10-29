@@ -44,6 +44,7 @@ impl Platform for TestPlatform {
             )
         };
         Ok(FileInfo {
+            private_bytes: None,
             kind,
             logical_bytes: m.len(),
             allocated_bytes: allocated,
@@ -307,6 +308,7 @@ impl Platform for StreamingPlatform {
                 return Ok(());
             }
             if !visit(DirectoryEvent::Entry(ScanEntry {
+                kind_hint: None,
                 path: path.join("denied"),
                 info: Some(Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
@@ -320,8 +322,10 @@ impl Platform for StreamingPlatform {
             self.produced
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let entry = ScanEntry {
+                kind_hint: None,
                 path: path.join(format!("file-{i}")),
                 info: Some(Ok(FileInfo {
+                    private_bytes: None,
                     kind: NodeKind::File,
                     logical_bytes: 1,
                     allocated_bytes: Some(0),
@@ -420,6 +424,7 @@ fn queued_directory_boundary_is_checked_when_it_is_visited() {
         ) -> io::Result<()> {
             if path == self.root {
                 visit(DirectoryEvent::Entry(ScanEntry {
+                    kind_hint: None,
                     path: path.join("queued"),
                     info: None,
                 }));
@@ -482,6 +487,7 @@ impl DirectoryAliasPlatform {
             || self.identity == Some("root-directory")
             || path.parent() == Some(self.root.as_path());
         FileInfo {
+            private_bytes: None,
             kind: if directory {
                 NodeKind::Directory
             } else {
@@ -529,6 +535,7 @@ impl Platform for DirectoryAliasPlatform {
             };
             for alias in aliases {
                 if !visitor(DirectoryEvent::Entry(ScanEntry {
+                    kind_hint: None,
                     path: path.join(alias),
                     info: None,
                 })) {
@@ -538,6 +545,7 @@ impl Platform for DirectoryAliasPlatform {
         } else {
             let child = path.join("same-file");
             visitor(DirectoryEvent::Entry(ScanEntry {
+                kind_hint: None,
                 info: Some(Ok(self.info(&child))),
                 path: child,
             }));

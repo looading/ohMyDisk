@@ -94,12 +94,13 @@ jobs:
         run: |
           python benchmarks/scan_bench.py \
             --binary "target/${{ matrix.target }}/release/examples/scan-bench${{ matrix.binary-suffix }}" \
+            --fixture all --fixture directory-heavy --directory-count 100 --directory-files-per-dir 2 --empty-directories 100 \
             --small-files 1000 --wide-files 1000 --deep-depth 8 --mixed-files 100 \
             --iterations 1 --warmups 0 --cancel-iterations 1 \
             --output benchmark-smoke-core.json
           python benchmarks/service_bench.py \
             --binary "target/${{ matrix.target }}/release/ohmydisk${{ matrix.binary-suffix }}" \
-            --files 1000 --runs 1 --historical-restart \
+            --files 1000 --runs 1 --historical-restart --size-metric attributed \
             --output benchmark-smoke-service.json
       - name: Upload benchmark smoke reports
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7

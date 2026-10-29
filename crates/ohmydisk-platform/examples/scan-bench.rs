@@ -1,5 +1,9 @@
 //! Diagnostic release runner. Fixture creation, hashing and queries are outside scan_ms.
-use ohmydisk_core::{DirectoryEvent, Platform, model::*};
+use ohmydisk_core::{
+    DirectoryEvent, Platform, SpaceObservation,
+    model::*,
+    scan_async::{ScanOptions, scan_async},
+};
 use ohmydisk_platform::NativePlatform;
 use sha2::{Digest, Sha256};
 use std::{
@@ -20,6 +24,8 @@ struct MeasuredPlatform {
     portable: bool,
     directory_calls: AtomicU64,
     directory_nanos: AtomicU64,
+    observation_calls: AtomicU64,
+    observation_nanos: AtomicU64,
 }
 impl Platform for MeasuredPlatform {
     fn metadata(&self, path: &Path) -> io::Result<FileInfo> {
@@ -27,6 +33,26 @@ impl Platform for MeasuredPlatform {
         let result = self.inner.metadata(path);
         self.calls.fetch_add(1, Ordering::Relaxed);
         self.nanos.fetch_add(
+            start.elapsed().as_nanos().try_into().unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
+        result
+    }
+    fn scan_metadata(&self, path: &Path) -> io::Result<FileInfo> {
+        let start = Instant::now();
+        let result = self.inner.scan_metadata(path);
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.nanos.fetch_add(
+            start.elapsed().as_nanos().try_into().unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
+        result
+    }
+    fn space_observation(&self, path: &Path) -> io::Result<Option<SpaceObservation>> {
+        let start = Instant::now();
+        let result = self.inner.space_observation(path);
+        self.observation_calls.fetch_add(1, Ordering::Relaxed);
+        self.observation_nanos.fetch_add(
             start.elapsed().as_nanos().try_into().unwrap_or(u64::MAX),
             Ordering::Relaxed,
         );
@@ -160,6 +186,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut output = None;
     let mut cancel_after = None;
     let mut portable = false;
+    let mut serial = false;
+    let mut workers = 4;
+    let mut workers_explicit = false;
     while let Some(flag) = arguments.next() {
         match flag.to_str() {
             Some("--output") => {
@@ -178,18 +207,47 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 )
             }
             Some("--portable-enumeration") => portable = true,
+            Some("--serial") => serial = true,
+            Some("--workers") => {
+                workers = arguments
+                    .next()
+                    .ok_or("Expected worker count")?
+                    .to_str()
+                    .ok_or("Invalid worker count")?
+                    .parse::<usize>()?;
+                workers_explicit = true;
+            }
             _ => return Err("Unknown benchmark option".into()),
         }
     }
     let output = output.ok_or("Expected --output")?;
-    let platform = MeasuredPlatform {
+    if ![1, 2, 4, 8].contains(&workers) {
+        return Err("Expected 1, 2, 4 or 8 workers".into());
+    }
+    if serial && workers_explicit {
+        return Err("Use --serial without --workers".into());
+    }
+    // Runtime startup belongs to process_wall_ms, outside the scan call timing.
+    let runtime = if serial {
+        None
+    } else {
+        Some(
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()?,
+        )
+    };
+    let platform = Arc::new(MeasuredPlatform {
         inner: NativePlatform,
         calls: AtomicU64::new(0),
         nanos: AtomicU64::new(0),
         portable,
         directory_calls: AtomicU64::new(0),
         directory_nanos: AtomicU64::new(0),
-    };
+        observation_calls: AtomicU64::new(0),
+        observation_nanos: AtomicU64::new(0),
+    });
     let cancelled = Arc::new(AtomicBool::new(false));
     let requested = Arc::new(Mutex::new(None::<Instant>));
     let (stop, receiver) = std::sync::mpsc::channel::<()>();
@@ -204,16 +262,55 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         })
     });
     let started = Instant::now();
-    let mut callbacks = 0u64;
-    let snapshot =
-        ohmydisk_core::scan::scan(&root, &platform, &cancelled, &mut |_| callbacks += 1)?;
-    let ended = Instant::now();
+    let (scan_result, ended, callbacks) = if let Some(runtime) = &runtime {
+        runtime.block_on(async {
+            let (progress, mut changes) = tokio::sync::watch::channel(ScanProgress::default());
+            // Count delivered watch changes only; the observer does no path
+            // processing, persistence, per-file spawning, or timer sleeps.
+            let observer = tokio::spawn(async move {
+                let mut callbacks = 0_u64;
+                while changes.changed().await.is_ok() {
+                    changes.borrow_and_update();
+                    callbacks += 1;
+                }
+                callbacks
+            });
+            let result = scan_async(
+                root.clone(),
+                platform.clone(),
+                cancelled.clone(),
+                ScanOptions {
+                    workers,
+                    ..Default::default()
+                },
+                Arc::new(tokio::sync::Semaphore::new(workers)),
+                progress,
+            )
+            .await;
+            let ended = Instant::now();
+            match observer.await {
+                Ok(callbacks) => (result, ended, callbacks),
+                Err(error) => (
+                    Err(AppError::new("worker_panic", error.to_string())),
+                    ended,
+                    0,
+                ),
+            }
+        })
+    } else {
+        let mut callbacks = 0_u64;
+        let result = ohmydisk_core::scan::scan(&root, platform.as_ref(), &cancelled, &mut |_| {
+            callbacks += 1
+        });
+        (result, Instant::now(), callbacks)
+    };
     let scan_ms = ended.duration_since(started).as_secs_f64() * 1000.0;
     let peak_rss_bytes = peak_rss();
     let _ = stop.send(());
     if let Some(timer) = timer {
         timer.join().map_err(|_| "Cancel timer panicked")?;
     }
+    let snapshot = scan_result?;
     let cancel_latency_ms = if snapshot.cancelled {
         requested
             .lock()
@@ -260,6 +357,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     let first_descendants_ms = query_start.elapsed().as_secs_f64() * 1000.0;
     let report = serde_json::json!({
+        "scan_mode":if serial {"serial"} else {"async"},"scan_workers":if serial {1} else {workers},
+        "space_observation_calls":platform.observation_calls.load(Ordering::Relaxed),
+        "space_observation_ms":platform.observation_nanos.load(Ordering::Relaxed) as f64/1_000_000.0,
         "scan_ms":scan_ms,"serialize_ms":serialize_ms,"snapshot_bytes":snapshot_bytes,"nodes":snapshot.nodes.len(),
         "files":snapshot.nodes.iter().filter(|n|n.kind!=NodeKind::Directory).count(),
         "directories":snapshot.nodes.iter().filter(|n|n.kind==NodeKind::Directory&&!n.is_link_or_reparse).count(),

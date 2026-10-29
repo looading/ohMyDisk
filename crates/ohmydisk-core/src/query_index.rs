@@ -1,9 +1,9 @@
 //! Position-only indexes for repeated queries against an immutable snapshot.
 
-use crate::{AppError, Node, Query, Snapshot};
+use crate::{AppError, Node, Query, SizeMetric, Snapshot, space};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
-use std::{cmp::Reverse, collections::HashMap, mem::size_of};
+use std::{cmp::Reverse, collections::HashMap, mem::size_of, sync::OnceLock};
 
 /// Derived data for one immutable snapshot. Node IDs and metadata remain owned
 /// by the snapshot; the index keeps positions rather than copies of those values.
@@ -19,6 +19,18 @@ pub struct QueryIndex {
     enter: Vec<usize>,
     exit: Vec<usize>,
     root: Option<usize>,
+    metric_rankings: [OnceLock<MetricRanking>; 2],
+}
+
+struct MetricRanking {
+    ranked_all: Vec<usize>,
+    rank: Vec<usize>,
+    children: Vec<usize>,
+}
+struct Ranking<'a> {
+    all: &'a [usize],
+    rank: &'a [usize],
+    children: &'a [usize],
 }
 
 fn invalid_snapshot() -> AppError {
@@ -191,6 +203,7 @@ impl QueryIndex {
             enter,
             exit,
             root,
+            metric_rankings: [OnceLock::new(), OnceLock::new()],
         })
     }
 
@@ -209,9 +222,86 @@ impl QueryIndex {
         ]
         .into_iter()
         .fold(0_usize, |sum, values| sum.saturating_add(values.capacity()));
+        let extra =
+            self.metric_rankings
+                .iter()
+                .filter_map(OnceLock::get)
+                .fold(0usize, |sum, ranking| {
+                    sum.saturating_add(ranking.ranked_all.capacity())
+                        .saturating_add(ranking.rank.capacity())
+                        .saturating_add(ranking.children.capacity())
+                });
         positions
+            .saturating_add(extra)
             .saturating_mul(size_of::<usize>())
             .saturating_add(self.snapshot_id.capacity())
+    }
+
+    /// Reserve cache accounting for lazily built alternate metric indexes.
+    pub fn estimated_max_heap_bytes(&self) -> usize {
+        let unbuilt = self
+            .metric_rankings
+            .iter()
+            .filter(|index| index.get().is_none())
+            .count();
+        self.estimated_heap_bytes().saturating_add(
+            unbuilt
+                .saturating_mul(3)
+                .saturating_mul(self.rank.len())
+                .saturating_mul(size_of::<usize>()),
+        )
+    }
+
+    pub fn prewarm_metric(&self, snapshot: &Snapshot, metric: SizeMetric) {
+        let _ = self.ranking(snapshot, metric);
+    }
+
+    fn ranking(&self, snapshot: &Snapshot, metric: SizeMetric) -> Ranking<'_> {
+        if metric == SizeMetric::Logical {
+            return Ranking {
+                all: &self.ranked_all,
+                rank: &self.rank,
+                children: &self.children,
+            };
+        }
+        let slot = usize::from(metric == SizeMetric::Attributed);
+        let ranking = self.metric_rankings[slot].get_or_init(|| {
+            let count = snapshot.nodes.len();
+            let mut all = if self.dense_ids {
+                decimal_lex_order(count)
+            } else {
+                self.by_id.clone()
+            };
+            all.sort_by_key(|position| {
+                Reverse(space::metric_value(&snapshot.nodes[*position], metric))
+            });
+            let mut rank = vec![0; count];
+            for (order, position) in all.iter().copied().enumerate() {
+                rank[position] = order;
+            }
+            let mut children = vec![0; count.saturating_sub(1)];
+            let mut next = self.child_offsets[..count].to_vec();
+            for position in all.iter().copied() {
+                if let Some(parent) = snapshot.nodes[position]
+                    .parent_id
+                    .as_deref()
+                    .and_then(|id| self.position(snapshot, id))
+                {
+                    children[next[parent]] = position;
+                    next[parent] += 1;
+                }
+            }
+            MetricRanking {
+                ranked_all: all,
+                rank,
+                children,
+            }
+        });
+        Ranking {
+            all: &ranking.ranked_all,
+            rank: &ranking.rank,
+            children: &ranking.children,
+        }
     }
 
     fn position(&self, snapshot: &Snapshot, id: &str) -> Option<usize> {
@@ -222,10 +312,6 @@ impl QueryIndex {
             .binary_search_by(|position| snapshot.nodes[*position].id.as_str().cmp(id))
             .ok()
             .map(|position| self.by_id[position])
-    }
-
-    fn direct_children(&self, scope: usize) -> &[usize] {
-        &self.children[self.child_offsets[scope]..self.child_offsets[scope + 1]]
     }
 
     fn descendants(&self, scope: usize) -> &[usize] {
@@ -289,12 +375,6 @@ fn name_matches(name: &str, lowercase_criterion: &str) -> bool {
 fn matches(node: &Node, query: &Query, name: Option<&str>) -> bool {
     query.kind.is_none_or(|kind| kind == node.kind)
         && name.is_none_or(|name| name_matches(&node.name, name))
-        && query
-            .min_bytes
-            .is_none_or(|bytes| node.logical_bytes >= bytes)
-        && query
-            .max_bytes
-            .is_none_or(|bytes| node.logical_bytes <= bytes)
         && query.modified_before.is_none_or(|before| {
             node.modified_ns
                 .is_some_and(|time| time / 1_000_000 <= before)
@@ -317,6 +397,7 @@ fn response(
     positions: &[usize],
     total: usize,
     end: usize,
+    excluded_unmeasured: usize,
 ) -> Result<serde_json::Value, AppError> {
     let next = if end < total {
         Some(
@@ -332,14 +413,18 @@ fn response(
         .iter()
         .map(|position| &snapshot.nodes[*position])
         .collect::<Vec<_>>();
-    Ok(serde_json::json!({
+    let mut value = serde_json::json!({
         "scan_id":snapshot.scan_id,
         "snapshot_id":snapshot.id,
         "items":items,
         "next_cursor":next,
         "total_matches":total,
         "includes_ancestor_descendant_overlap":query.descendants,
-    }))
+        "size_metric":query.size_metric,
+        "excluded_unmeasured":excluded_unmeasured,
+    });
+    space::annotate_query(&mut value, snapshot, query.size_metric);
+    Ok(value)
 }
 
 /// Query an immutable snapshot using an index built from that same snapshot.
@@ -364,10 +449,13 @@ pub fn query_indexed(
     let scope = index
         .position(snapshot, scope)
         .ok_or_else(|| AppError::new("not_found", "Scope node not found"))?;
+    space::require_measurement(&snapshot.nodes, query.size_metric)?;
+    let ranking = index.ranking(snapshot, query.size_metric);
     let (signature, offset) = signature_and_offset(snapshot, query)?;
     let unfiltered = no_filters(query);
     if unfiltered && !query.descendants {
-        let children = index.direct_children(scope);
+        let children =
+            &ranking.children[index.child_offsets[scope]..index.child_offsets[scope + 1]];
         let end = page_end(children.len(), offset, query)?;
         return response(
             snapshot,
@@ -376,29 +464,46 @@ pub fn query_indexed(
             &children[offset..end],
             children.len(),
             end,
+            0,
         );
     }
     if unfiltered && Some(scope) == index.root {
         let total = snapshot.nodes.len() - 1;
         let end = page_end(total, offset, query)?;
-        let scope_rank = index.rank[scope];
+        let scope_rank = ranking.rank[scope];
         // Translate the page's rank directly around the removed scope. Using
         // filter(...).skip(offset) would rescan the prefix on every later page.
         let page = (offset..end)
-            .map(|rank| index.ranked_all[rank + usize::from(rank >= scope_rank)])
+            .map(|rank| ranking.all[rank + usize::from(rank >= scope_rank)])
             .collect::<Vec<_>>();
-        return response(snapshot, query, signature, &page, total, end);
+        return response(snapshot, query, signature, &page, total, end, 0);
     }
     let candidates = if query.descendants {
         index.descendants(scope)
     } else {
-        index.direct_children(scope)
+        &ranking.children[index.child_offsets[scope]..index.child_offsets[scope + 1]]
     };
     let lowercase_name = query.name.as_ref().map(|name| name.to_lowercase());
+    let mut excluded_unmeasured = 0usize;
     let mut selected = candidates
         .iter()
         .copied()
-        .filter(|position| matches(&snapshot.nodes[*position], query, lowercase_name.as_deref()))
+        .filter(|position| {
+            let node = &snapshot.nodes[*position];
+            if !matches(node, query, lowercase_name.as_deref()) {
+                return false;
+            }
+            if (query.min_bytes.is_some() || query.max_bytes.is_some())
+                && !space::metric_is_complete(node, query.size_metric)
+            {
+                excluded_unmeasured += 1;
+                return false;
+            }
+            space::metric_value(node, query.size_metric).is_none_or(|value| {
+                query.min_bytes.is_none_or(|min| value >= min)
+                    && query.max_bytes.is_none_or(|max| value <= max)
+            })
+        })
         .collect::<Vec<_>>();
     let total = selected.len();
     let end = page_end(total, offset, query)?;
@@ -406,13 +511,13 @@ pub fn query_indexed(
         // All matches still contribute to total_matches. Only the first end
         // global ranks need selection, and only the final page needs sorting.
         if end < total {
-            selected.select_nth_unstable_by_key(end, |position| index.rank[*position]);
+            selected.select_nth_unstable_by_key(end, |position| ranking.rank[*position]);
             selected.truncate(end);
         }
         if offset > 0 {
-            selected.select_nth_unstable_by_key(offset, |position| index.rank[*position]);
+            selected.select_nth_unstable_by_key(offset, |position| ranking.rank[*position]);
         }
-        selected[offset..end].sort_unstable_by_key(|position| index.rank[*position]);
+        selected[offset..end].sort_unstable_by_key(|position| ranking.rank[*position]);
     }
     response(
         snapshot,
@@ -421,6 +526,7 @@ pub fn query_indexed(
         &selected[offset..end],
         total,
         end,
+        excluded_unmeasured,
     )
 }
 
@@ -487,6 +593,7 @@ mod tests {
                 directories.push(position);
             }
             nodes.push(Node {
+                space_usage: None,
                 id: ids[position].clone(),
                 parent_id: parent.map(|parent| ids[parent].clone()),
                 name: format!("{}-{position}", names[position % names.len()]),
@@ -513,6 +620,7 @@ mod tests {
             }
         }
         Snapshot {
+            space_accounting: None,
             id: "snapshot-fixture".into(),
             scan_id: "scan-fixture".into(),
             root_id: "root/🤖".into(),
@@ -842,6 +950,92 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(decimal_lex_order(count), expected, "node count {count}");
         }
+    }
+
+    #[test]
+    fn alternate_metrics_have_identical_reference_pages_filters_and_cursors() {
+        let mut snapshot = snapshot(53, 2, 7, true);
+        for (position, node) in snapshot.nodes.iter_mut().enumerate() {
+            node.space_usage = Some(crate::NodeSpace {
+                attributed_bytes: (position % 7) as u64 * 200,
+                measured_entries: u64::from(position % 4 != 0),
+                unmeasured_entries: u64::from(position % 4 == 0 || position % 5 == 0),
+            });
+        }
+        let index = QueryIndex::new(&snapshot).unwrap();
+        for metric in [
+            SizeMetric::Logical,
+            SizeMetric::Allocated,
+            SizeMetric::Attributed,
+        ] {
+            for scope in snapshot.nodes.iter().take(6).map(|node| node.id.clone()) {
+                for mut query in criteria() {
+                    query.size_metric = metric;
+                    query.scope_node_id = Some(scope.clone());
+                    for descendants in [false, true] {
+                        query.descendants = descendants;
+                        query.cursor = None;
+                        query.limit = Some(3);
+                        loop {
+                            let Some(page) = same(&snapshot, &index, &query) else {
+                                break;
+                            };
+                            query.cursor = page["next_cursor"].as_str().map(str::to_owned);
+                            if query.cursor.is_none() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            index
+                .metric_rankings
+                .iter()
+                .all(|ranking| ranking.get().is_some())
+        );
+        assert!(index.estimated_max_heap_bytes() >= index.estimated_heap_bytes());
+    }
+
+    #[test]
+    fn legacy_query_serialization_and_cursor_signature_survive_new_metric_field() {
+        let snapshot = snapshot(20, 0, 7, false);
+        let index = QueryIndex::new(&snapshot).unwrap();
+        let criteria = Query {
+            descendants: true,
+            limit: Some(2),
+            ..Query::default()
+        };
+        let encoded = serde_json::to_string(&criteria).unwrap();
+        assert_eq!(
+            encoded,
+            "{\"scope_node_id\":null,\"descendants\":true,\"name\":null,\"kind\":null,\"min_bytes\":null,\"max_bytes\":null,\"modified_before\":null,\"cursor\":null,\"limit\":2}"
+        );
+        let legacy_signature = format!(
+            "{:x}",
+            Sha256::digest(format!("[\"{}\",{}]", snapshot.id, encoded))
+        );
+        let cursor =
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&(legacy_signature, 2usize)).unwrap());
+        same(
+            &snapshot,
+            &index,
+            &Query {
+                cursor: Some(cursor),
+                ..criteria
+            },
+        );
+        let unavailable = query_indexed(
+            &snapshot,
+            &index,
+            &Query {
+                size_metric: SizeMetric::Attributed,
+                ..Query::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(unavailable.code, "measurement_required");
     }
 
     #[test]

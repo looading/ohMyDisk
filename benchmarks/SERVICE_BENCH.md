@@ -6,6 +6,62 @@ progress and snapshot storage. It complements the core scanner runner in
 Build and preserve application binaries in release mode before measuring. The
 script does not build them or verify their optimization settings.
 
+## Space metrics and bounded concurrency in 0.2.0
+
+The GUI defaults to attributed file space against an OS capacity observation.
+The existing benchmark requests omit `size_metric`, so the service's compatible
+query default remains `logical`. Its inventory assertions and `logical_bytes`
+measurement retain their original meaning. A logical total can exceed capacity
+for sparse files, compression, hard links or shared blocks; it is not a physical
+capacity or cleanup-yield measurement. An attributed-query benchmark must pass
+`size_metric: "attributed"` explicitly and report that choice. Do not mix its
+query latency or byte totals into a logical-query comparison.
+
+`get_capabilities` reports `application_version`, supported `size_metrics`,
+`default_display_metric`, `legacy_query_default` and `scan_concurrency`. Scan jobs
+also return `scan_workers`. The runtime coordinates bounded directory workers on
+the blocking pool with a shared filesystem budget. Expensive subtree/filter
+queries and cold snapshot builds have separate budgets. A cold build owner holds
+its permit through decoding, indexing and attributed-index prewarming; same-ID
+waiters and ready-cache hits do not consume additional build permits. Multiple
+workers are not proof of a speedup: compare preserved release binaries and record
+the actual concurrency configuration for each measurement.
+
+New scan summaries persist `space_accounting` with their original observations.
+Historical result equality therefore covers that ledger as well as the original
+node metadata and query ordering. A native observation with `balanced` status can
+be checked as `C = A + E + R`: raw available bytes, measured attributed file bytes
+and shared/system/unattributed bytes sum to the filesystem-visible capacity.
+The remainder can also include files outside a folder scan, permissions,
+snapshots, filesystem metadata and reservations. `C-A` is not the exclusive usage
+of an APFS volume. An unavailable or inconsistent observation, including a
+`caller_view` quota fallback, must not be normalized into a physical breakdown.
+Unknown file values are not measured zero, and unknown-subtree markers are not
+an exact count of missing files. See [MCP size semantics](../docs/mcp.md#大小统计与容量对应).
+
+For a small correctness check of the new MCP semantics, without collecting a
+performance result, use an already built binary:
+
+```sh
+python3 tests/mcp_smoke.py target/debug/ohmydisk --service-mode supervised
+```
+
+This uses its own temporary state and files, checks attributed ordering,
+unknown-value filtering, metric-bound cursors, persisted accounting after MCP
+reconnection and the capacity equation when valid observations exist. It also
+retains the 17-tool, cleanup mode and idempotency checks. It does not require
+private-size support on every filesystem and is not a benchmark. Use the `.exe`
+suffix for a Windows binary; add `--trash` only to exercise the fixture's actual
+OS recycle-bin operation.
+
+The timings below include each binary's own work. In 0.2.0 this can include two
+native capacity samples, private-size attributes, concurrent-worker shutdown,
+the final coalesced progress write and attributed-index prewarming. Historical
+versions can omit those stages. A difference is an end-to-end observation for
+that workload, not an isolated decoder or directory-concurrency claim.
+
+## Measurement procedure
+
 For an isolated decoder experiment, `decode-bench` constructs a synthetic
 100,000-node Snapshot in memory and uses the production streaming encoder. It
 compares `from_slice` with validating UTF-8 once and calling `from_str`, using
@@ -131,7 +187,7 @@ otherwise:
 | `snapshot_stored_bytes` | Stored payload bytes: legacy UTF-8 JSON length plus compressed BLOB length |
 | `snapshot_compression_ratio` | Stored/original payload bytes; null when original payload bytes are zero |
 | `source_scan_ms`, `source_persist_ms`, `source_index_build_ms` | Optional scan, persistence and index build timings from terminal `job.result` |
-| `progress_writes` | Optional scan callback progress writes from `job.result`; excludes indexing, terminal and cleanup records |
+| `progress_writes` | Optional successful scan-progress writes from `job.result`; in 0.2.0 these are coalesced/throttled watch-writer records, excluding indexing, terminal and cleanup records |
 | `historical_cold_list_children_ms`, `historical_cold_query_descendants_ms` | First snapshot query after separate service restarts, with the same state and scan |
 | `historical_warm_list_children_ms`, `historical_warm_query_descendants_ms` | Identical first-page query repeated after its historical cold request |
 | `historical_children_restart_ms`, `historical_descendants_restart_ms` | Process launch until RPC readiness for each historical phase, separate from query latency |
@@ -192,3 +248,17 @@ OS/architecture/Python versions. They omit selected paths, names, raw stdout,
 raw stderr and exception messages. Failures use a fixed JSON error code and exit
 status 2; success exits 0. Diagnostic subprocess output is parsed transiently
 and never copied into a report or error.
+
+
+## Metric selection
+
+The default query metric remains legacy logical for comparisons with preserved
+older executables. To measure the GUI's occupancy query path, pass
+`--size-metric attributed`; `--reference-size-metric` selects the reference
+independently. Nonlogical requests must echo the selected metric or the harness
+fails. Warm and historical requests retain the same metric and full-response
+validation. The report stores each binary's query metric. Comparing current
+attributed queries with an older logical-only reference measures different
+workloads and must be described that way, rather than as a query algorithm-only
+speedup. `source_scan_workers` records the candidate's configured scan workers
+when supplied by the service; absence on older binaries is null.

@@ -30,17 +30,20 @@ import time
 
 
 FIXTURES = ("small-files", "wide-directory", "deep-tree", "mixed")
+OPTIONAL_FIXTURES = ("directory-heavy",)
+ALL_FIXTURES = (*FIXTURES, *OPTIONAL_FIXTURES)
 NUMERIC_FIELDS = (
     "scan_ms", "serialize_ms", "snapshot_bytes", "nodes", "files", "directories",
     "logical_bytes", "metadata_calls", "peak_rss_bytes", "cancel_latency_ms",
     "metadata_ms", "progress_callbacks", "first_children_ms", "first_descendants_ms",
     "directory_calls", "directory_ms", "index_build_ms",
+    "scan_workers", "space_observation_calls", "space_observation_ms",
 )
 INTEGER_FIELDS = {
     "snapshot_bytes", "nodes", "files", "directories", "logical_bytes",
     "metadata_calls", "peak_rss_bytes",
     "progress_callbacks",
-    "directory_calls",
+    "directory_calls", "scan_workers", "space_observation_calls",
 }
 REQUIRED_FIELDS = {
     "scan_ms", "serialize_ms", "snapshot_bytes", "nodes", "files", "directories",
@@ -68,7 +71,7 @@ def write_file(path: Path, size: int, payload: bytes) -> None:
 
 def make_fixture(root: Path, name: str, args: argparse.Namespace) -> dict:
     """Use small actual writes rather than sparse files or hardlinks for bulk data."""
-    seed = args.seed + FIXTURES.index(name)
+    seed = args.seed + ALL_FIXTURES.index(name)
     rng = random.Random(seed)
     payload = bytes(rng.randrange(256) for _ in range(4096))
     features = {"symlinks": 0, "hardlinks": 0, "symlinks_unavailable": False,
@@ -105,6 +108,18 @@ def make_fixture(root: Path, name: str, args: argparse.Namespace) -> dict:
                       "file_bytes_min": 128,
                       "file_bytes_max": 127 + args.deep_depth
                       + min(args.deep_files_per_level - 1, 1023)}
+    elif name == "directory-heavy":
+        for index in range(args.directory_count + args.empty_directories):
+            directory = root / f"d{index:06d}"
+            directory.mkdir()
+            if index < args.directory_count:
+                for file_index in range(args.directory_files_per_dir):
+                    write_file(directory / f"f{file_index:06d}", 128, payload)
+        parameters = {"directories_with_files": args.directory_count if args.directory_files_per_dir else 0,
+                      "empty_directories": args.empty_directories + (args.directory_count if not args.directory_files_per_dir else 0),
+                      "files_per_directory": args.directory_files_per_dir,
+                      "regular_files": args.directory_count * args.directory_files_per_dir,
+                      "file_bytes": 128}
     else:
         directories = [root]
         for index in range(64):
@@ -261,11 +276,16 @@ def validated_result(value: object) -> dict:
     if not isinstance(digest, str) or re.fullmatch(r"[0-9a-fA-F]{64}", digest) is None:
         raise BenchError("Runner validation_digest must be a SHA-256 hex string")
     result["validation_digest"] = digest.lower()
+    mode = value.get("scan_mode")
+    if mode is not None and mode not in ("async", "serial"):
+        raise BenchError("Runner scan_mode must be async or serial")
+    result["scan_mode"] = mode
     return result
 
 
 def invoke(binary: Path, root: Path, scratch: Path, timeout: float,
-           cancel_after_ms: int | None = None, enumeration: str = "default") -> dict:
+           cancel_after_ms: int | None = None, enumeration: str = "default",
+           workers: int | None = None, serial: bool = False) -> dict:
     output = scratch / "runner-result.json"
     output.unlink(missing_ok=True)
     command = [str(binary), str(root), "--output", str(output)]
@@ -273,6 +293,7 @@ def invoke(binary: Path, root: Path, scratch: Path, timeout: float,
         command.extend(("--cancel-after-ms", str(cancel_after_ms)))
     if enumeration == "portable":
         command.append("--portable-enumeration")
+    command.extend(execution_arguments(workers, serial))
     started = time.perf_counter()
     try:
         # Discard output deliberately: it may contain private paths. The report
@@ -326,12 +347,25 @@ def summarize(runs: list[dict]) -> dict:
             for key in (*NUMERIC_FIELDS, "process_wall_ms", "files_per_second")}
 
 
+def execution_arguments(workers: int | None = None, serial: bool = False) -> list[str]:
+    """Default adds no flag, preserving compatibility with frozen runners."""
+    if serial:
+        return ["--serial"]
+    return ["--workers", str(workers)] if workers is not None else []
+
+
+def execution_metadata(workers: int | None = None, serial: bool = False) -> dict:
+    return {"selection": "serial" if serial else "async" if workers is not None else "runner_default",
+            "workers": 1 if serial else workers,
+            "arguments": execution_arguments(workers, serial)}
+
+
 def binary_info(binary: Path, role: str, profile_name: str, target: str | None,
-                enumeration: str) -> dict:
+                enumeration: str, workers: int | None = None, serial: bool = False) -> dict:
     try:
         return {"role": role, "sha256": file_hash(binary), "bytes": binary.stat().st_size,
                 "declared_profile": profile_name, "declared_target": target,
-                "enumeration": enumeration}
+                "enumeration": enumeration, "execution": execution_metadata(workers, serial)}
     except OSError:
         raise BenchError(f"Cannot read {role} binary") from None
 
@@ -366,6 +400,8 @@ def benchmark_fixture(root: Path, descriptor: dict, binaries: list[tuple[str, Pa
               "variants": {}, "validation_errors": []}
     expected_digest = None
     enumerations = {"candidate": args.enumeration, "reference": args.reference_enumeration}
+    execution = {"candidate": {"workers": args.workers, "serial": args.serial},
+                 "reference": {"workers": args.reference_workers, "serial": args.reference_serial}}
     for role, _ in binaries:
         result["variants"][role] = {"warmups": [], "runs": [], "cancellation_runs": []}
 
@@ -375,7 +411,7 @@ def benchmark_fixture(root: Path, descriptor: dict, binaries: list[tuple[str, Pa
         order = binaries if iteration % 2 == 0 else list(reversed(binaries))
         for role, binary in order:
             run = invoke(binary, root, scratch, args.timeout_seconds,
-                         enumeration=enumerations[role])
+                         enumeration=enumerations[role], **execution[role])
             run["iteration"] = iteration if iteration < args.warmups else iteration - args.warmups
             run["validation_errors"] = check_full_result(run, before)
             if expected_digest is None:
@@ -391,7 +427,7 @@ def benchmark_fixture(root: Path, descriptor: dict, binaries: list[tuple[str, Pa
         order = binaries if iteration % 2 == 0 else list(reversed(binaries))
         for role, binary in order:
             run = invoke(binary, root, scratch, args.timeout_seconds, args.cancel_after_ms,
-                         enumeration=enumerations[role])
+                         enumeration=enumerations[role], **execution[role])
             run["iteration"] = iteration
             run["requested_after_ms"] = args.cancel_after_ms
             if run["cancelled"]:
@@ -456,13 +492,27 @@ def parse_args() -> argparse.Namespace:
                         help="Candidate enumeration mode; portable adds --portable-enumeration")
     parser.add_argument("--reference-enumeration", choices=("default", "portable"), default="default",
                         help="Reference enumeration mode; default adds no runner argument")
+    candidate_execution = parser.add_mutually_exclusive_group()
+    candidate_execution.add_argument("--workers", type=int, choices=(1, 2, 4, 8),
+                                     help="Candidate async worker count; omitted adds no runner flag")
+    candidate_execution.add_argument("--serial", action="store_true", help="Candidate serial scan; requires a current runner")
+    reference_execution = parser.add_mutually_exclusive_group()
+    reference_execution.add_argument("--reference-workers", type=int, choices=(1, 2, 4, 8),
+                                     help="Reference async worker count; omitted preserves frozen runners")
+    reference_execution.add_argument("--reference-serial", action="store_true", help="Reference serial scan; requires a current runner")
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--root", type=Path, help="Explicit existing directory; read-only scans")
-    selection.add_argument("--fixture", action="append", choices=(*FIXTURES, "all"),
+    selection.add_argument("--fixture", action="append", choices=(*ALL_FIXTURES, "all"),
                            help="Repeat to select fixtures; default: all")
     parser.add_argument("--small-files", type=int, default=100_000)
     parser.add_argument("--wide-files", type=int, default=50_000)
     parser.add_argument("--mixed-files", type=int, default=10_000)
+    parser.add_argument("--directory-count", type=int, default=5_000,
+                        help="directory-heavy populated directory groups")
+    parser.add_argument("--directory-files-per-dir", type=int, default=1,
+                        help="directory-heavy files per populated group; 0 makes it empty")
+    parser.add_argument("--empty-directories", type=int, default=5_000,
+                        help="directory-heavy additional empty directories")
     parser.add_argument("--deep-depth", type=int, default=128, help="1 to 128")
     parser.add_argument("--deep-files-per-level", type=int, default=1,
                         help="Files at each depth; default 1 preserves the original fixture")
@@ -480,7 +530,8 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.iterations < 1 or args.warmups < 0 or args.cancel_iterations < 0:
         parser.error("iterations must be positive; warmups/cancel-iterations must be nonnegative")
-    if min(args.small_files, args.wide_files, args.mixed_files) < 0:
+    if min(args.small_files, args.wide_files, args.mixed_files, args.directory_count,
+           args.directory_files_per_dir, args.empty_directories) < 0:
         parser.error("file counts must be nonnegative")
     if not 1 <= args.deep_depth <= 128:
         parser.error("deep-depth must be between 1 and 128")
@@ -500,22 +551,25 @@ def main() -> int:
         environment = environment_info()
         target = args.target or environment["rustc"].get("host")
         binaries = [("candidate", args.binary.resolve())]
-        info = [binary_info(binaries[0][1], "candidate", args.profile, target, args.enumeration)]
+        info = [binary_info(binaries[0][1], "candidate", args.profile, target, args.enumeration, args.workers, args.serial)]
         if args.reference_binary:
             binaries.append(("reference", args.reference_binary.resolve()))
             info.append(binary_info(binaries[1][1], "reference", args.reference_profile, target,
-                                    args.reference_enumeration))
+                                    args.reference_enumeration, args.reference_workers, args.reference_serial))
         report = {
             "schema_version": 1,
             "created_at_utc": datetime.now(timezone.utc).isoformat(),
             "environment": environment, "binaries": info,
             "method": {"cache": "warm; no OS cache clearing", "iterations": args.iterations,
                        "warmups": args.warmups, "p95": "nearest rank",
-                       "timing": "runner scan_ms excludes serialization; process_wall_ms includes startup and output",
+                       "timing": "scan_ms includes native observations and scan; excludes runtime setup, serialization, index, queries; process_wall_ms includes startup and output",
                        "peak_rss": "OS process high-water mark read when scan returns, before diagnostic hashing/queries/serialization; bytes or null",
                        "binary_order": "alternates each iteration",
                        "enumeration": {item["role"]: item["enumeration"] for item in info},
                        "enumeration_arguments": "default: none; portable: --portable-enumeration",
+                       "execution": {item["role"]: item["execution"] for item in info},
+                       "execution_arguments": "runner_default: none; async: --workers N; serial: --serial",
+                       "metadata_calls": "Platform metadata plus scan_metadata invocations, not total native syscalls",
                        "cancel_after_ms": args.cancel_after_ms,
                        "cancel_iterations": args.cancel_iterations,
                        "paths": "omitted; runner output restricted to known scalar fields"},
@@ -540,7 +594,8 @@ def main() -> int:
                 selections = [(root, descriptor)]
             else:
                 names = args.fixture or ["all"]
-                selected = FIXTURES if "all" in names else tuple(dict.fromkeys(names))
+                selected = tuple(dict.fromkeys(name for selection in names
+                                                for name in (FIXTURES if selection == "all" else (selection,))))
                 selections = []
                 for name in selected:
                     root = temporary / name

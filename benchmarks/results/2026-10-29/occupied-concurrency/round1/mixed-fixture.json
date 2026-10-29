@@ -1,0 +1,36 @@
+{
+  "kind": "mixed",
+  "seed": 20261032,
+  "parameters": {
+    "regular_files_requested": 10000,
+    "top_level_directories": 66,
+    "extra_target_file_bytes": 257
+  },
+  "features": {
+    "symlinks": 4,
+    "hardlinks": 1,
+    "symlinks_unavailable": false,
+    "hardlinks_unavailable": false
+  },
+  "expected": {
+    "nodes": 10073,
+    "files": 10006,
+    "directories": 67,
+    "boundaries": 4,
+    "hidden_entries": 1438,
+    "hardlinked_file_entries": 2,
+    "metadata_errors": 0,
+    "read_directory_errors": 0,
+    "kinds": {
+      "directory": 67,
+      "file": 10002,
+      "symlink": 4,
+      "other": 0
+    },
+    "logical_bytes": 8825347,
+    "expected_complete": false,
+    "inventory_digest": "578a2d5fcab14e493dd8e21d9b029463c9c10a94730f21d3d987bd76ec5f93a2"
+  },
+  "fixture_setup_ms": 1893.6054580844939,
+  "setup_timing": "fixture creation plus independent inventory; excluded from scan timing"
+}

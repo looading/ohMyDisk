@@ -59,15 +59,15 @@ struct SpaceAccounting {
 // Platform::space_observation defaults to Ok(None).
 ```
 
-- [ ] Preserve an immutable v0.1.2 runner/application baseline outside the repo.
-- [ ] Add optional/default/skip-none fields and a metric-aware Query with default
+- [x] Preserve an immutable v0.1.2 runner/application baseline outside the repo.
+- [x] Add optional/default/skip-none fields and a metric-aware Query with default
   Logical omitted from serialization. Keep existing logical cursor signatures.
-- [ ] Add pure attribution/aggregation/reconciliation tests: C=995,A=245,E=500
+- [x] Add pure attribution/aggregation/reconciliation tests: C=995,A=245,E=500
   gives R=250; E greater than used returns inconsistent with no fake remainder;
   hardlinks/empty identity/unsupported providers remain unmeasured.
-- [ ] Implement metric extraction, full/partial/unknown state, consistent sorting
+- [x] Implement metric extraction, full/partial/unknown state, consistent sorting
   and numeric filtering in reference and indexed query paths.
-- [ ] Verify differential pages/cursors for every metric and old JSON snapshots.
+- [x] Verify differential pages/cursors for every metric and old JSON snapshots.
 
 ## Task 2: Native attribution and capacity providers — space agent
 
@@ -77,14 +77,14 @@ space-provider module; platform-only tests. Do not edit shared core models.
 Consumes the Task 1 interfaces. Produces ordinary FileInfo with private bytes,
 coherent SpaceObservation and Volume.space_observation when available.
 
-- [ ] Add per-record returned-bit checked macOS private size, keep all existing
+- [x] Add per-record returned-bit checked macOS private size, keep all existing
   native metadata fields and unsupported/partial fallback behavior.
-- [ ] Implement same-basis macOS native volume observation with stat fallback;
+- [x] Implement same-basis macOS native volume observation with stat fallback;
   include optional used detail, never put purgeable capacity into raw available.
-- [ ] Implement Windows actual allocation-unit capacity and caller detail; probe
+- [x] Implement Windows actual allocation-unit capacity and caller detail; probe
   local NTFS/shared-block capability once for the scan context.
-- [ ] Keep metadata cheap for cleanup; scan_metadata is the optional extra probe.
-- [ ] Test fresh files, sparse files, clone/shared/unsupported values, malformed
+- [x] Keep metadata cheap for cleanup; scan_metadata is the optional extra probe.
+- [x] Test fresh files, sparse files, clone/shared/unsupported values, malformed
   records, capacity arithmetic and ordinary FileInfo parity.
 
 ## Task 3: Bounded Tokio scan workers — async agent
@@ -104,14 +104,14 @@ async fn scan_async(
 ) -> Result<Snapshot, AppError>;
 ```
 
-- [ ] Keep the serial scan entry point as a reference and populate new metrics.
-- [ ] Add a single-reducer, directory-level worker protocol with admission before
+- [x] Keep the serial scan entry point as a reference and populate new metrics.
+- [x] Add a single-reducer, directory-level worker protocol with admission before
   reading, streaming bounded batches and parent-done child eligibility.
-- [ ] Propagate NodeSpace and before/after space observations in both paths.
-- [ ] Stop dispatch on cancel/error, unblock bounded sends/replies and await every
+- [x] Propagate NodeSpace and before/after space observations in both paths.
+- [x] Stop dispatch on cancel/error, unblock bounded sends/replies and await every
   worker before returning. Preserve partial snapshot and issue semantics.
-- [ ] Add deterministic alias/volume-change/full-channel cancellation/panic tests.
-- [ ] Expose worker count to the benchmark runner through a coordinated change;
+- [x] Add deterministic alias/volume-change/full-channel cancellation/panic tests.
+- [x] Expose worker count to the benchmark runner through a coordinated change;
   no worker-per-file spawning or unbounded event buffers.
 
 ## Task 4: DaisyDisk-style iced views — GUI agent
@@ -122,42 +122,45 @@ mod.rs; keep application messages and service interface integration clear.
 Consumes Node.space_usage, Snapshot/scan summary.space_accounting,
 Volume.space_observation and Query size_metric="attributed".
 
-- [ ] Implement disk overview and analysis as two views with explicit scan/open/
+- [x] Implement disk overview and analysis as two views with explicit scan/open/
   rescan actions; identify related APFS entry points without summing capacities.
-- [ ] Make the chart the main workspace, add distinct inherited branch colours,
+- [x] Make the chart the main workspace, add distinct inherited branch colours,
   compact directory rows and a collapsed expandable collector.
-- [ ] Add epoch-safe debounced hover child preview and centre-click parent return.
-- [ ] Render capacity/free/attributed/remainder as one coherent root view; show
+- [x] Add epoch-safe debounced hover child preview and centre-click parent return.
+- [x] Render capacity/free/attributed/remainder as one coherent root view; show
   known zero/shared/unmeasured distinctly and never use raw logical as a fallback.
-- [ ] Keep unknown/synthetic space navigable for explanation but non-collectable.
-- [ ] Preserve plan review and independent trash/permanent confirmation.
-- [ ] Validate with isolated state/fixtures and the existing native app controls.
+- [x] Keep synthetic space navigable for explanation but non-collectable; real
+  entries retain ordinary identity/completeness validation independently of size knowledge.
+- [x] Preserve plan review and independent trash/permanent confirmation.
+- [ ] Complete release GUI acceptance after the user unlocks macOS. Overview,
+  hover, navigation, collection and trash-plan review were verified with isolated
+  state; the permanent-confirmation performance recheck is still pending.
 
 ## Task 5: Service integration and query concurrency — root
 
 Files: service/src/engine.rs, snapshot_cache.rs, core query modules as needed,
 service lifecycle tests, mcp documentation/schema and scan/service benchmarks.
 
-- [ ] Route scan jobs into the async coordinator with existing job lifecycle and
+- [x] Route scan jobs into the async coordinator with existing job lifecycle and
   a shared filesystem budget; keep terminal durability and worker cleanup.
-- [ ] Persist/return SpaceAccounting in scan summaries without reading all nodes.
-- [ ] Add metric capability/status metadata while retaining legacy raw fields.
-- [ ] Limit expensive queries independently and implement per-snapshot cold-load
+- [x] Persist/return SpaceAccounting in scan summaries without reading all nodes.
+- [x] Add metric capability/status metadata while retaining legacy raw fields.
+- [x] Limit expensive queries independently and implement per-snapshot cold-load
   single-flight without holding the ready-cache mutex while decoding/indexing.
-- [ ] Test old storage, new storage, release/restart/cursors, concurrent queries,
+- [x] Test old storage, new storage, release/restart/cursors, concurrent queries,
   cancellation responsiveness and unchanged cleanup authorization.
 
 ## Task 6: Benchmark, review and distribution — root/team
 
-- [ ] Run release worker 1/2/4/8 comparisons on small/wide/deep/mixed/directory-
+- [x] Run release worker 1/2/4/8 comparisons on small/wide/deep/mixed/directory-
   dense fixtures. Record semantic parity, latency median/p95, RSS and cancellation.
-- [ ] Measure physical-provider overhead separately from concurrency gains.
-- [ ] Select a measured default; retain serial/one-worker fallback when a device
+- [x] Measure physical-provider overhead separately from concurrency gains.
+- [x] Select a measured default; retain serial/one-worker fallback when a device
   does not benefit. Do not claim constant snapshot/frontier memory.
-- [ ] Run cargo fmt, workspace tests, Clippy and Python/MCP smoke, then independent
+- [x] Run cargo fmt, workspace tests, Clippy and Python/MCP smoke, then independent
   code review of native FFI, cancellation/admission and occupancy reconciliation.
-- [ ] Verify the isolated GUI layout/interactions, publish native Windows/macOS
-  CI builds only, validate checksums/privacy markers, and record actual evidence.
+- [ ] Finish release GUI verification and native Windows/macOS CI, publish only
+  tested CI builds, and validate checksums/privacy markers.
 
 ## Test commands
 
@@ -171,3 +174,13 @@ python3 tests/mcp_smoke.py --trash --service-mode supervised
 
 Expected: no failing tests or compiler errors; existing lint warnings are tracked
 separately. Timing comparisons are reported only after semantic checks pass.
+
+## Verification record (2026-10-29)
+
+Local frozen source: 131 Rust tests and 11 Python tests passed; formatting and
+Clippy passed with existing lint warnings. Final release MCP smoke passed both
+auto and supervised modes, including fixture-only native trash/permanent
+cleanup, metric cursors and persisted occupancy reconciliation. The attributed
+service/history smoke also passed. Worker experiments and their regressions are
+recorded in `benchmarks/PERFORMANCE-0.2.0.md`. Remaining GUI and native CI checks
+above are intentionally incomplete until observed.

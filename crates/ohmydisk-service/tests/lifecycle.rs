@@ -658,10 +658,14 @@ async fn legacy_snapshot_query_is_compatible_without_rewriting_legacy_data() {
     let root = fixture.path().join("files");
     std::fs::create_dir(&root).unwrap();
     std::fs::write(root.join("legacy"), b"legacy data").unwrap();
-    let snapshot =
+    let mut snapshot =
         ohmydisk_core::scan::scan(&root, &NativePlatform, &false.into(), &mut |_| {}).unwrap();
     let state = fixture.path().join("state");
     ohmydisk_platform::prepare_private_dir(&state).unwrap();
+    snapshot.space_accounting = None;
+    for node in &mut snapshot.nodes {
+        node.space_usage = None;
+    }
     let store = Store::open(&state.join("state.sqlite")).unwrap();
     let job_id = new_id();
     store.put("snapshot", &snapshot.id, &snapshot).unwrap();

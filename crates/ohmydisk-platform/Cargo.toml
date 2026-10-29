@@ -19,9 +19,10 @@ libc = "0.2"
 widestring = "1.2"
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }
 windows-core = "0.62.2"
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_Com", "Win32_System_StationsAndDesktops", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_Com", "Win32_System_StationsAndDesktops", "Win32_System_LibraryLoader", "Win32_System_SystemServices", "Win32_System_WindowsProgramming", "Win32_System_IO", "Win32_System_Ioctl", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
+tokio.workspace = true
 tempfile.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

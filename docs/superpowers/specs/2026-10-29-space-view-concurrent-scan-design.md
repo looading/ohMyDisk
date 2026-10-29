@@ -114,7 +114,12 @@ Top-level branches have distinct colours; descendants inherit a related hue.
 Hovering a directory previews its children in the right panel. Cached previews
 appear immediately; uncached ones use a short debounce and epoch/cancellation so
 old responses cannot overwrite newer hover state. Click enters the directory;
-clicking the circle centre returns to its parent. Small-item aggregation and
+clicking the circle centre returns to its parent. A filesystem-root analysis
+starts in the full capacity context. A folder-only analysis starts with its own
+attributed E as the local chart budget, so a 9 MB folder is not labelled as the
+whole volume's used space. At the scan root, a volume/context toggle switches
+between these views only when the same occupancy ledger is valid; descendants
+always use local E. This changes presentation scope, never the underlying bytes. Small-item aggregation and
 unattributed space have distinct styling and interactions.
 
 Collector defaults to a compact row and expands for review. Dragging highlights

@@ -1,0 +1,35 @@
+{
+  "kind": "wide-directory",
+  "seed": 20261030,
+  "parameters": {
+    "regular_files": 50000,
+    "file_bytes": 32
+  },
+  "features": {
+    "symlinks": 0,
+    "hardlinks": 0,
+    "symlinks_unavailable": false,
+    "hardlinks_unavailable": false
+  },
+  "expected": {
+    "nodes": 50001,
+    "files": 50000,
+    "directories": 1,
+    "boundaries": 0,
+    "hidden_entries": 0,
+    "hardlinked_file_entries": 0,
+    "metadata_errors": 0,
+    "read_directory_errors": 0,
+    "kinds": {
+      "directory": 1,
+      "file": 50000,
+      "symlink": 0,
+      "other": 0
+    },
+    "logical_bytes": 1600000,
+    "expected_complete": true,
+    "inventory_digest": "1163b1530c504704c46e20787930b3b2959a19ac95f6cef71ec6ae00fbfc15dc"
+  },
+  "fixture_setup_ms": 10154.533000080846,
+  "setup_timing": "fixture creation plus independent inventory; excluded from scan timing"
+}

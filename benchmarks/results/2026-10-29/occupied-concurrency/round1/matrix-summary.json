@@ -1,0 +1,2292 @@
+{
+  "schema_version": 1,
+  "validated": true,
+  "hardware": {
+    "cpu": "Apple M5 Pro",
+    "physical_cpus": 18,
+    "logical_cpus": 18,
+    "memory_bytes": 51539607552,
+    "os": "macOS",
+    "os_version": "26.6.2",
+    "os_build": "25G83"
+  },
+  "versions": {
+    "candidate": "0.2.0",
+    "reference": "0.1.2",
+    "profiles": "release"
+  },
+  "binary_hashes": {
+    "candidate": "efff3d698e450036c2e6aed270330c1a3c76cd36c0833a48b872d51ca0c661b9",
+    "old_v0_1_2": "cd26ccd797328d14af8716b0696a696ee3e1dae15a71285956278ce371d68e8d"
+  },
+  "measured_samples_per_role_per_pair": 5,
+  "warmups_per_role_per_pair": 1,
+  "cancel_samples_per_role_per_pair": 3,
+  "p95_method": "nearest rank; n=5 p95 is the maximum sample",
+  "method": "paired alternating scans on the same owned generated fixture; warm cache; serial and async current share occupancy provider",
+  "worker_geometric_mean_of_equal_weight_fixture_ratios": {
+    "1": 1.0428719260580985,
+    "2": 0.9440210951042916,
+    "4": 0.879443497306747,
+    "8": 0.8552003876400174
+  },
+  "weighting_limit": "equal fixture weights are an illustration, not a production workload model; no worker count wins every shape",
+  "fixtures": [
+    {
+      "fixture": "small-files",
+      "expected": {
+        "nodes": 100101,
+        "files": 100000,
+        "directories": 101,
+        "boundaries": 0,
+        "hidden_entries": 0,
+        "hardlinked_file_entries": 0,
+        "metadata_errors": 0,
+        "read_directory_errors": 0,
+        "kinds": {
+          "directory": 101,
+          "file": 100000,
+          "symlink": 0,
+          "other": 0
+        },
+        "logical_bytes": 12800000,
+        "expected_complete": true,
+        "inventory_digest": "06295f0c366dc76445140aa97b26a911a06c7e6b67c03ab49f2c4140be2e7d77"
+      },
+      "async": [
+        {
+          "workers": 1,
+          "scan_ms": {
+            "samples": 5,
+            "median": 352.636167,
+            "p95": 383.419708,
+            "min": 345.159041,
+            "max": 383.419708
+          },
+          "rss_bytes": {
+            "samples": 5,
+            "median": 80986112,
+            "p95": 82132992,
+            "min": 80887808,
+            "max": 82132992
+          },
+          "metadata_calls": {
+            "samples": 5,
+            "median": 102,
+            "p95": 102,
+            "min": 102,
+            "max": 102
+          },
+          "metadata_ms": {
+            "samples": 5,
+            "median": 0.328506,
+            "p95": 0.351376,
+            "min": 0.30775,
+            "max": 0.351376
+          },
+          "directory_ms": {
+            "samples": 5,
+            "median": 346.071336,
+            "p95": 376.546001,
+            "min": 338.437702,
+            "max": 376.546001
+          },
+          "space_observation_ms": {
+            "samples": 5,
+            "median": 0.020125,
+            "p95": 0.021251,
+            "min": 0.0175,
+            "max": 0.021251
+          },
+          "cancellation": {
+            "attempts": 3,
+            "cancelled": 3,
+            "completed_before_cancel": 0,
+            "completed_without_observing_cancel": 0,
+            "response_observed": true,
+            "latency_ms": {
+              "samples": 3,
+              "median": 0.224208,
+              "p95": 0.792583,
+              "min": 0.11820800000000001,
+              "max": 0.792583
+            },
+            "process_wall_ms": {
+              "samples": 3,
+              "median": 48.27049991581589,
+              "p95": 48.77645894885063,
+              "min": 24.20112502295524,
+              "max": 48.77645894885063
+            }
+          },
+          "paired_serial_scan_ms": {
+            "samples": 5,
+            "median": 358.91691599999996,
+            "p95": 386.31929199999996,
+            "min": 352.843792,
+            "max": 386.31929199999996
+          },
+          "candidate_over_paired_serial": 0.9825008275731424,
+          "report": "small-files-workers-1-vs-serial.json"
+        },
+        {
+          "workers": 2,
+          "scan_ms": {
+            "samples": 5,
+            "median": 383.983,
+            "p95": 417.751875,
+            "min": 382.219875,
+            "max": 417.751875
+          },
+          "rss_bytes": {
+            "samples": 5,
+            "median": 79921152,
+            "p95": 80101376,
+            "min": 79740928,
+            "max": 80101376
+          },
+          "metadata_calls": {
+            "samples": 5,
+            "median": 102,
+            "p95": 102,
+            "min": 102,
+            "max": 102
+          },
+          "metadata_ms": {
+            "samples": 5,
+            "median": 0.315987,
+            "p95": 0.345376,
+            "min": 0.303585,
+            "max": 0.345376
+          },
+          "directory_ms": {
+            "samples": 5,
+            "median": 759.564921,
+            "p95": 824.902498,
+            "min": 755.914041,
+            "max": 824.902498
+          },
+          "space_observation_ms": {
+            "samples": 5,
+            "median": 0.020292,
+            "p95": 0.022542,
+            "min": 0.019458,
+            "max": 0.022542
+          },
+          "cancellation": {
+            "attempts": 3,
+            "cancelled": 3,
+            "completed_before_cancel": 0,
+            "completed_without_observing_cancel": 0,
+            "response_observed": true,
+            "latency_ms": {
+              "samples": 3,
+              "median": 2.8969590000000003,
+              "p95": 3.488416,
+              "min": 0.839084,
+              "max": 3.488416
+            },
+            "process_wall_ms": {
+              "samples": 3,
+              "median": 24.33475002180785,
+              "p95": 42.21608303487301,
+              "min": 24.258916033431888,
+              "max": 42.21608303487301
+            }
+          },
+          "paired_serial_scan_ms": {
+            "samples": 5,
+            "median": 360.011833,
+            "p95": 373.905959,
+            "min": 356.41024999999996,
+            "max": 373.905959
+          },
+          "candidate_over_paired_serial": 1.06658438640821,
+          "report": "small-files-workers-2-vs-serial.json"
+        },
+        {
+          "workers": 4,
+          "scan_ms": {
+            "samples": 5,
+            "median": 405.43316699999997,
+            "p95": 419.334625,
+            "min": 374.70662500000003,
+            "max": 419.334625
+          },
+          "rss_bytes": {
+            "samples": 5,
+            "median": 81133568,
+            "p95": 82411520,
+            "min": 80674816,
+            "max": 82411520
+          },
+          "metadata_calls": {
+            "samples": 5,
+            "median": 102,
+            "p95": 102,
+            "min": 102,
+            "max": 102
+          },
+          "metadata_ms": {
+            "samples": 5,
+            "median": 0.337954,
+            "p95": 0.3535,
+            "min": 0.319458,
+            "max": 0.3535
+          },
+          "directory_ms": {
+            "samples": 5,
+            "median": 1607.39921,
+            "p95": 1661.24363,
+            "min": 1484.500581,
+            "max": 1661.24363
+          },
+          "space_observation_ms": {
+            "samples": 5,
+            "median": 0.019959,
+            "p95": 0.020708,
+            "min": 0.017624,
+            "max": 0.020708
+          },
+          "cancellation": {
+            "attempts": 3,
+            "cancelled": 3,
+            "completed_before_cancel": 0,
+            "completed_without_observing_cancel": 0,
+            "response_observed": true,
+            "latency_ms": {
+              "samples": 3,
+              "median": 2.2777499999999997,
+              "p95": 4.4672089999999995,
+              "min": 2.118125,
+              "max": 4.4672089999999995
+            },
+            "process_wall_ms": {
+              "samples": 3,
+              "median": 43.79841696936637,
+              "p95": 43.889249907806516,
+              "min": 42.05491591710597,
+              "max": 43.889249907806516
+            }
+          },
+          "paired_serial_scan_ms": {
+            "samples": 5,
+            "median": 363.36458300000004,
+            "p95": 399.30737500000004,
+            "min": 360.43237500000004,
+            "max": 399.30737500000004
+          },
+          "candidate_over_paired_serial": 1.1157751359603474,
+          "report": "small-files-workers-4-vs-serial.json"
+        },
+        {
+          "workers": 8,
+          "scan_ms": {
+            "samples": 5,
+            "median": 475.94750000000005,
+            "p95": 498.166208,
+            "min": 462.923792,
+            "max": 498.166208
+          },
+          "rss_bytes": {
+            "samples": 5,
+            "median": 84721664,
+            "p95": 85032960,
+            "min": 84262912,
+            "max": 85032960
+          },
+          "metadata_calls": {
+            "samples": 5,
+            "median": 102,
+            "p95": 102,
+            "min": 102,
+            "max": 102
+          },
+          "metadata_ms": {
+            "samples": 5,
+            "median": 0.593209,
+            "p95": 0.680459,
+            "min": 0.532996,
+            "max": 0.680459
+          },
+          "directory_ms": {
+            "samples": 5,
+            "median": 3725.46567,
+            "p95": 3907.459254,
+            "min": 3628.174076,
+            "max": 3907.459254
+          },
+          "space_observation_ms": {
+            "samples": 5,
+            "median": 0.021917,
+            "p95": 0.023876,
+            "min": 0.016666,
+            "max": 0.023876
+          },
+          "cancellation": {
+            "attempts": 3,
+            "cancelled": 3,
+            "completed_before_cancel": 0,
+            "completed_without_observing_cancel": 0,
+            "response_observed": true,
+            "latency_ms": {
+              "samples": 3,
+              "median": 20.889042,
+              "p95": 21.111042,
+              "min": 18.415208999999997,
+              "max": 21.111042
+            },
+            "process_wall_ms": {
+              "samples": 3,
+              "median": 39.58204097580165,
+              "p95": 79.71154199913144,
+              "min": 39.55904196482152,
+              "max": 79.71154199913144
+            }
+          },
+          "paired_serial_scan_ms": {
+            "samples": 5,
+            "median": 361.774875,
+            "p95": 373.80237500000004,
+            "min": 358.66825,
+            "max": 373.80237500000004
+          },
+          "candidate_over_paired_serial": 1.3155902548511695,
+          "report": "small-files-workers-8-vs-serial.json"
+        }
+      ],
+      "current_serial": {
+        "scan_ms": {
+          "samples": 5,
+          "median": 357.981584,
+          "p95": 361.200583,
+          "min": 343.07883300000003,
+          "max": 361.200583
+        },
+        "rss_bytes": {
+          "samples": 5,
+          "median": 79609856,
+          "p95": 79642624,
+          "min": 79577088,
+          "max": 79642624
+        },
+        "metadata_calls": {
+          "samples": 5,
+          "median": 102,
+          "p95": 102,
+          "min": 102,
+          "max": 102
+        },
+        "metadata_ms": {
+          "samples": 5,
+          "median": 0.320205,
+          "p95": 0.346047,
+          "min": 0.300124,
+          "max": 0.346047
+        },
+        "directory_ms": {
+          "samples": 5,
+          "median": 357.149418,
+          "p95": 360.304538,
+          "min": 342.278877,
+          "max": 360.304538
+        },
+        "space_observation_ms": {
+          "samples": 5,
+          "median": 0.02025,
+          "p95": 0.023333,
+          "min": 0.016958,
+          "max": 0.023333
+        },
+        "cancellation": {
+          "attempts": 3,
+          "cancelled": 3,
+          "completed_before_cancel": 0,
+          "completed_without_observing_cancel": 0,
+          "response_observed": true,
+          "latency_ms": {
+            "samples": 3,
+            "median": 0.410417,
+            "p95": 0.8334170000000001,
+            "min": 0.0485,
+            "max": 0.8334170000000001
+          },
+          "process_wall_ms": {
+            "samples": 3,
+            "median": 47.94629197567701,
+            "p95": 48.015707987360656,
+            "min": 45.39754195138812,
+            "max": 48.015707987360656
+          }
+        }
+      },
+      "old_v0_1_2": {
+        "scan_ms": {
+          "samples": 5,
+          "median": 151.596125,
+          "p95": 152.181042,
+          "min": 140.32229099999998,
+          "max": 152.181042
+        },
+        "rss_bytes": {
+          "samples": 5,
+          "median": 76316672,
+          "p95": 76578816,
+          "min": 76218368,
+          "max": 76578816
+        },
+        "metadata_calls": {
+          "samples": 5,
+          "median": 102,
+          "p95": 102,
+          "min": 102,
+          "max": 102
+        },
+        "metadata_ms": {
+          "samples": 5,
+          "median": 0.326573,
+          "p95": 0.386831,
+          "min": 0.289997,
+          "max": 0.386831
+        },
+        "directory_ms": {
+          "samples": 5,
+          "median": 150.119831,
+          "p95": 150.65517,
+          "min": 138.984161,
+          "max": 150.65517
+        },
+        "space_observation_ms": null,
+        "cancellation": {
+          "attempts": 3,
+          "cancelled": 3,
+          "completed_before_cancel": 0,
+          "completed_without_observing_cancel": 0,
+          "response_observed": true,
+          "latency_ms": {
+            "samples": 3,
+            "median": 0.069959,
+            "p95": 0.195208,
+            "min": 0.060375,
+            "max": 0.195208
+          },
+          "process_wall_ms": {
+            "samples": 3,
+            "median": 48.21683303453028,
+            "p95": 48.23116702027619,
+            "min": 42.05345793161541,
+            "max": 48.23116702027619
+          }
+        }
+      },
+      "current_serial_over_old": 2.3614164544113514,
+      "cross_configuration_digest_validated": true,
+      "digest_v1": "88f71bb1bacd8b9794a1a0240d785e34daabf28c19c32f32f99f064094b2b73f"
+    },
+    {
+      "fixture": "wide-directory",
+      "expected": {
+        "nodes": 50001,
+        "files": 50000,
+        "directories": 1,
+        "boundaries": 0,
+        "hidden_entries": 0,
+        "hardlinked_file_entries": 0,
+        "metadata_errors": 0,
+        "read_directory_errors": 0,
+        "kinds": {
+          "directory": 1,
+          "file": 50000,
+          "symlink": 0,
+          "other": 0
+        },
+        "logical_bytes": 1600000,
+        "expected_complete": true,
+        "inventory_digest": "1163b1530c504704c46e20787930b3b2959a19ac95f6cef71ec6ae00fbfc15dc"
+      },
+      "async": [
+        {
+          "workers": 1,
+          "scan_ms": {
+            "samples": 5,
+            "median": 216.338792,
+            "p95": 270.301,
+            "min": 194.32454199999998,
+            "max": 270.301
+          },
+          "rss_bytes": {
+            "samples": 5,
+            "median": 43188224,
+            "p95": 43237376,
+            "min": 43171840,
+            "max": 43237376
+          },
+          "metadata_calls": {
+            "samples": 5,
+            "median": 2,
+            "p95": 2,
+            "min": 2,
+            "max": 2
+          },
+          "metadata_ms": {
+            "samples": 5,
+            "median": 0.017291,
+            "p95": 0.021083,
+            "min": 0.0125,
+            "max": 0.021083
+          },
+          "directory_ms": {
+            "samples": 5,
+            "median": 215.950333,
+            "p95": 269.930709,
+            "min": 193.919125,
+            "max": 269.930709
+          },
+          "space_observation_ms": {
+            "samples": 5,
+            "median": 0.023458,
+            "p95": 0.03125,
+            "min": 0.022209,
+            "max": 0.03125
+          },
+          "cancellation": {
+            "attempts": 3,
+            "cancelled": 3,
+            "completed_before_cancel": 0,
+            "completed_without_observing_cancel": 0,
+            "response_observed": true,
+            "latency_ms": {
+              "samples": 3,
+              "median": 6.840041,
+              "p95": 7.948167000000001,
+              "min": 1.789708,
+              "max": 7.948167000000001
+            },
+            "process_wall_ms": {
+              "samples": 3,
+              "median": 48.26633306220174,
+              "p95": 48.36083296686411,
+              "min": 48.219083924777806,
+              "max": 48.36083296686411
+            }
+          },
+          "paired_serial_scan_ms": {
+            "samples": 5,
+            "median": 232.123792,
+            "p95": 269.42525,
+            "min": 202.737084,
+            "max": 269.42525
+          },
+          "candidate_over_paired_serial": 0.9319974920968033,
+          "report": "wide-directory-workers-1-vs-serial.json"
+        },
+        {
+          "workers": 2,
+          "scan_ms": {
+            "samples": 5,
+            "median": 200.184416,
+            "p95": 217.959917,
+            "min": 196.340584,
+            "max": 217.959917
+          },
+          "rss_bytes": {
+            "samples": 5,
+            "median": 43302912,
+            "p95": 43335680,
+            "min": 43270144,
+            "max": 43335680
+          },
+          "metadata_calls": {
+            "samples": 5,
+            "median": 2,
+            "p95": 2,
+            "min": 2,
+            "max": 2
+          },
+          "metadata_ms": {
+            "samples": 5,
+            "median": 0.015625,
+            "p95": 0.016708,
+            "min": 0.013959,
+            "max": 0.016708
+          },
+          "directory_ms": {
+            "samples": 5,
+            "median": 199.649042,
+            "p95": 217.558917,
+            "min": 195.383542,
+            "max": 217.558917
+          },
+          "space_observation_ms": {
+            "samples": 5,
+            "median": 0.028792,
+            "p95": 0.032791,
+            "min": 0.024084,
+            "max": 0.032791
+          },
+          "cancellation": {
+            "attempts": 3,
+            "cancelled": 3,
+            "completed_before_cancel": 0,
+            "completed_without_observing_cancel": 0,
+            "response_observed": true,
+            "latency_ms": {
+              "samples": 3,
+              "median": 6.91125,
+              "p95": 7.8225,
+              "min": 6.8915,
+              "max": 7.8225
+            },
+            "process_wall_ms": {
+              "samples": 3,
+              "median": 48.189374967478216,
+              "p95": 48.22966700885445,
+              "min": 44.77695794776082,
+              "max": 48.22966700885445
+            }
+          },
+          "paired_serial_scan_ms": {
+            "samples": 5,
+            "median": 205.89654199999998,
+            "p95": 233.89595899999998,
+            "min": 203.375125,
+            "max": 233.89595899999998
+          },
+          "candidate_over_paired_serial": 0.9722572999793266,
+          "report": "wide-directory-workers-2-vs-serial.json"
+        },
+        {
+          "workers": 4,
+          "scan_ms": {
+            "samples": 5,
+            "median": 296.278791,
+            "p95": 315.46412499999997,
+            "min": 204.379125,
+            "max": 315.46412499999997
+          },
+          "rss_bytes": {
+            "samples": 5,
+            "median": 43499520,
+            "p95": 43532288,
+            "min": 43483136,
+            "max": 43532288
+          },
+          "metadata_calls": {
+            "samples": 5,
+            "median": 2,
+            "p95": 2,
+            "min": 2,
+            "max": 2
+          },
+          "metadata_ms": {
+            "samples": 5,
+            "median": 0.015542,
+            "p95": 0.033333,
+            "min": 0.013125,
+            "max": 0.033333
+          },
+          "directory_ms": {
+            "samples": 5,
+            "median": 295.877208,
+            "p95": 315.050625,
+            "min": 203.8265,
+            "max": 315.050625
+          },
+          "space_observation_ms": {
+            "samples": 5,
+            "median": 0.025333,
+            "p95": 0.027542,
+            "min": 0.020583,
+            "max": 0.027542
+          },
+          "cancellation": {
+            "attempts": 3,
+            "cancelled": 3,
+            "completed_before_cancel": 0,
+            "completed_without_observing_cancel": 0,
+            "response_observed": true,
+            "latency_ms": {
+              "samples": 3,
+              "median": 0.996042,
+              "p95": 4.3175,
+              "min": 0.0925,
+              "max": 4.3175
+            },
+            "process_wall_ms": {
+              "samples": 3,
+              "median": 24.266499909572303,
+              "p95": 39.54187501221895,
+              "min": 24.17024993337691,
+              "max": 39.54187501221895
+            }
+          },
+          "paired_serial_scan_ms": {
+            "samples": 5,
+            "median": 255.104375,
+            "p95": 301.08662499999997,
+            "min": 190.16774999999998,
+            "max": 301.08662499999997
+          },
+          "candidate_over_paired_serial": 1.16140223388956,
+          "report": "wide-directory-workers-4-vs-serial.json"
+        },
+        {
+          "workers": 8,
+          "scan_ms": {
+            "samples": 5,
+            "median": 200.801625,
+            "p95": 222.427125,
+            "min": 186.150125,
+            "max": 222.427125
+          },
+          "rss_bytes": {
+            "samples": 5,
+            "median": 43483136,
+            "p95": 43515904,
+            "min": 43466752,
+            "max": 43515904
+          },
+          "metadata_calls": {
+            "samples": 5,
+            "median": 2,
+            "p95": 2,
+            "min": 2,
+            "max": 2
+          },
+          "metadata_ms": {
+            "samples": 5,
+            "median": 0.015834,
+            "p95": 0.017792,
+            "min": 0.011208,
+            "max": 0.017792
+          },
+          "directory_ms": {
+            "samples": 5,
+            "median": 200.416666,
+            "p95": 222.029917,
+            "min": 185.778375,
+            "max": 222.029917
+          },
+          "space_observation_ms": {
+            "samples": 5,
+            "median": 0.026625,
+            "p95": 0.029583,
+            "min": 0.02275,
+            "max": 0.029583
+          },
+          "cancellation": {
+            "attempts": 3,
+            "cancelled": 3,
+            "completed_before_cancel": 0,
+            "completed_without_observing_cancel": 0,
+            "response_observed": true,
+            "latency_ms": {
+              "samples": 3,
+              "median": 6.775667,
+              "p95": 7.474583,
+              "min": 6.765625,
+              "max": 7.474583
+            },
+            "process_wall_ms": {
+              "samples": 3,
+              "median": 47.843749984167516,
+              "p95": 48.33775002043694,
+              "min": 42.82670794054866,
+              "max": 48.33775002043694
+            }
+          },
+          "paired_serial_scan_ms": {
+            "samples": 5,
+            "median": 214.77675,
+            "p95": 218.742834,
+            "min": 202.277875,
+            "max": 218.742834
+          },
+          "candidate_over_paired_serial": 0.9349318536573442,
+          "report": "wide-directory-workers-8-vs-serial.json"
+        }
+      ],
+      "current_serial": {
+        "scan_ms": {
+          "samples": 5,
+          "median": 237.50845900000002,
+          "p95": 252.89262499999998,
+          "min": 220.132792,
+          "max": 252.89262499999998
+        },
+        "rss_bytes": {
+          "samples": 5,
+          "median": 42369024,
+          "p95": 42500096,
+          "min": 42352640,
+          "max": 42500096
+        },
+        "metadata_calls": {
+          "samples": 5,
+          "median": 2,
+          "p95": 2,
+          "min": 2,
+          "max": 2
+        },
+        "metadata_ms": {
+          "samples": 5,
+          "median": 0.013376,
+          "p95": 0.014667,
+          "min": 0.012832,
+          "max": 0.014667
+        },
+        "directory_ms": {
+          "samples": 5,
+          "median": 236.88675,
+          "p95": 252.598125,
+          "min": 219.522833,
+          "max": 252.598125
+        },
+        "space_observation_ms": {
+          "samples": 5,
+          "median": 0.028834,
+          "p95": 0.030625,
+          "min": 0.023166,
+          "max": 0.030625
+        },
+        "cancellation": {
+          "attempts": 3,
+          "cancelled": 3,
+          "completed_before_cancel": 0,
+          "completed_without_observing_cancel": 0,
+          "response_observed": true,
+          "latency_ms": {
+            "samples": 3,
+            "median": 2.150083,
+            "p95": 7.671833,
+            "min": 0.046291,
+            "max": 7.671833
+          },
+          "process_wall_ms": {
+            "samples": 3,
+            "median": 45.329874963499606,
+            "p95": 46.80837504565716,
+            "min": 24.15845904033631,
+            "max": 46.80837504565716
+          }
+        }
+      },
+      "old_v0_1_2": {
+        "scan_ms": {
+          "samples": 5,
+          "median": 72.143792,
+          "p95": 81.87404199999999,
+          "min": 70.30958299999999,
+          "max": 81.87404199999999
+        },
+        "rss_bytes": {
+          "samples": 5,
+          "median": 40402944,
+          "p95": 40419328,
+          "min": 40370176,
+          "max": 40419328
+        },
+        "metadata_calls": {
+          "samples": 5,
+          "median": 2,
+          "p95": 2,
+          "min": 2,
+          "max": 2
+        },
+        "metadata_ms": {
+          "samples": 5,
+          "median": 0.013167,
+          "p95": 0.013917,
+          "min": 0.012208,
+          "max": 0.013917
+        },
+        "directory_ms": {
+          "samples": 5,
+          "median": 71.637625,
+          "p95": 81.287334,
+          "min": 69.739667,
+          "max": 81.287334
+        },
+        "space_observation_ms": null,
+        "cancellation": {
+          "attempts": 3,
+          "cancelled": 3,
+          "completed_before_cancel": 0,
+          "completed_without_observing_cancel": 0,
+          "response_observed": true,
+          "latency_ms": {
+            "samples": 3,
+            "median": 0.5631670000000001,
+            "p95": 1.445333,
+            "min": 0.172917,
+            "max": 1.445333
+          },
+          "process_wall_ms": {
+            "samples": 3,
+            "median": 48.10441704466939,
+            "p95": 48.380083055235445,
+            "min": 39.459082996472716,
+            "max": 48.380083055235445
+          }
+        }
+      },
+      "current_serial_over_old": 3.29215380028818,
+      "cross_configuration_digest_validated": true,
+      "digest_v1": "8845da6d864bf8100e7d900a6133550bb8ba26c37ab63a49a1abe46bc5277b60"
+    },
+    {
+      "fixture": "deep-tree",
+      "expected": {
+        "nodes": 8321,
+        "files": 8192,
+        "directories": 129,
+        "boundaries": 0,
+        "hidden_entries": 0,
+        "hardlinked_file_entries": 0,
+        "metadata_errors": 0,
+        "read_directory_errors": 0,
+        "kinds": {
+          "directory": 129,
+          "file": 8192,
+          "symlink": 0,
+          "other": 0
+        },
+        "logical_bytes": 1826816,
+        "expected_complete": true,
+        "inventory_digest": "8d7c5bd79732645c9f50ee5291350cda7e64fe1370244fdbbe0b9b212040b741"
+      },
+      "async": [
+        {
+          "workers": 1,
+          "scan_ms": {
+            "samples": 5,
+            "median": 48.89475,
+            "p95": 57.507625,
+            "min": 47.742458,
+            "max": 57.507625
+          },
+          "rss_bytes": {
+            "samples": 5,
+            "median": 19300352,
+            "p95": 19365888,
+            "min": 19218432,
+            "max": 19365888
+          },
+          "metadata_calls": {
+            "samples": 5,
+            "median": 130,
+            "p95": 130,
+            "min": 130,
+            "max": 130
+          },
+          "metadata_ms": {
+            "samples": 5,
+            "median": 0.709543,
+            "p95": 0.853293,
+            "min": 0.668703,
+            "max": 0.853293
+          },
+          "directory_ms": {
+            "samples": 5,
+            "median": 41.047213,
+            "p95": 49.356082,
+            "min": 40.110836,
+            "max": 49.356082
+          },
+          "space_observation_ms": {
+            "samples": 5,
+            "median": 0.017209,
+            "p95": 0.020583,
+            "min": 0.016,
+            "max": 0.020583
+          },
+          "cancellation": {
+            "attempts": 3,
+            "cancelled": 3,
+            "completed_before_cancel": 0,
+            "completed_without_observing_cancel": 0,
+            "response_observed": true,
+            "latency_ms": {
+              "samples": 3,
+              "median": 0.100334,
+              "p95": 0.18820800000000001,
+              "min": 0.062958,
+              "max": 0.18820800000000001
+            },
+            "process_wall_ms": {
+              "samples": 3,
+              "median": 24.17958399746567,
+              "p95": 25.125041021965444,
+              "min": 23.647291935048997,
+              "max": 25.125041021965444
+            }
+          },
+          "paired_serial_scan_ms": {
+            "samples": 5,
+            "median": 44.402625,
+            "p95": 48.223208,
+            "min": 43.052792,
+            "max": 48.223208
+          },
+          "candidate_over_paired_serial": 1.1011680052699588,
+          "report": "deep-tree-workers-1-vs-serial.json"
+        },
+        {
+          "workers": 2,
+          "scan_ms": {
+            "samples": 5,
+            "median": 54.902667,
+            "p95": 63.875292,
+            "min": 47.375208,
+            "max": 63.875292
+          },
+          "rss_bytes": {
+            "samples": 5,
+            "median": 19283968,
+            "p95": 19365888,
+            "min": 19234816,
+            "max": 19365888
+          },
+          "metadata_calls": {
+            "samples": 5,
+            "median": 130,
+            "p95": 130,
+            "min": 130,
+            "max": 130
+          },
+          "metadata_ms": {
+            "samples": 5,
+            "median": 0.696705,
+            "p95": 0.914001,
+            "min": 0.673173,
+            "max": 0.914001
+          },
+          "directory_ms": {
+            "samples": 5,
+            "median": 45.489866,
+            "p95": 55.579252,
+            "min": 39.963539,
+            "max": 55.579252
+          },
+          "space_observation_ms": {
+            "samples": 5,
+            "median": 0.017792,
+            "p95": 0.018584,
+            "min": 0.016875,
+            "max": 0.018584
+          },
+          "cancellation": {
+            "attempts": 3,
+            "cancelled": 3,
+            "completed_before_cancel": 0,
+            "completed_without_observing_cancel": 0,
+            "response_observed": true,
+            "latency_ms": {
+              "samples": 3,
+              "median": 0.13825,
+              "p95": 0.183458,
+              "min": 0.082667,
+              "max": 0.183458
+            },
+            "process_wall_ms": {
+              "samples": 3,
+              "median": 24.41566693596542,
+              "p95": 24.56833398900926,
+              "min": 24.033375084400177,
+              "max": 24.56833398900926
+            }
+          },
+          "paired_serial_scan_ms": {
+            "samples": 5,
+            "median": 48.136417,
+            "p95": 60.744625,
+            "min": 43.217833999999996,
+            "max": 60.744625
+          },
+          "candidate_over_paired_serial": 1.1405640556919723,
+          "report": "deep-tree-workers-2-vs-serial.json"
+        },
+        {
+          "workers": 4,
+          "scan_ms": {
+            "samples": 5,
+            "median": 49.937374999999996,
+            "p95": 56.063874999999996,
+            "min": 48.36075,
+            "max": 56.063874999999996
+          },
+          "rss_bytes": {
+            "samples": 5,
+            "median": 19398656,
+            "p95": 19415040,
+            "min": 19234816,
+            "max": 19415040
+          },
+          "metadata_calls": {
+            "samples": 5,
+            "median": 130,
+            "p95": 130,
+            "min": 130,
+            "max": 130
+          },
+          "metadata_ms": {
+            "samples": 5,
+            "median": 0.816248,
+            "p95": 0.883499,
+            "min": 0.722621,
+            "max": 0.883499
+          },
+          "directory_ms": {
+            "samples": 5,
+            "median": 42.105539,
+            "p95": 47.847627,
+            "min": 40.649078,
+            "max": 47.847627
+          },
+          "space_observation_ms": {
+            "samples": 5,
+            "median": 0.016875,
+            "p95": 0.019416,
+            "min": 0.015709,
+            "max": 0.019416
+          },
+          "cancellation": {
+            "attempts": 3,
+            "cancelled": 3,
+            "completed_before_cancel": 0,
+            "completed_without_observing_cancel": 0,
+            "response_observed": true,
+            "latency_ms": {
+              "samples": 3,
+              "median": 0.169333,
+              "p95": 0.283792,
+              "min": 0.024457999999999997,
+              "max": 0.283792
+            },
+            "process_wall_ms": {
+              "samples": 3,
+              "median": 23.737374925985932,
+              "p95": 24.046291946433485,
+              "min": 22.637250018306077,
+              "max": 24.046291946433485
+            }
+          },
+          "paired_serial_scan_ms": {
+            "samples": 5,
+            "median": 47.113875,
+            "p95": 52.082167,
+            "min": 42.289583,
+            "max": 52.082167
+          },
+          "candidate_over_paired_serial": 1.0599292671214158,
+          "report": "deep-tree-workers-4-vs-serial.json"
+        },
+        {
+          "workers": 8,
+          "scan_ms": {
+            "samples": 5,
+            "median": 48.083833,
+            "p95": 49.118333,
+            "min": 47.274709,
+            "max": 49.118333
+          },
+          "rss_bytes": {
+            "samples": 5,
+            "median": 19251200,
+            "p95": 19300352,
+            "min": 19218432,
+            "max": 19300352
+          },
+          "metadata_calls": {
+            "samples": 5,
+            "median": 130,
+            "p95": 130,
+            "min": 130,
+            "max": 130
+          },
+          "metadata_ms": {
+            "samples": 5,
+            "median": 0.653331,
+            "p95": 0.715329,
+            "min": 0.632038,
+            "max": 0.715329
+          },
+          "directory_ms": {
+            "samples": 5,
+            "median": 40.651048,
+            "p95": 41.454175,
+            "min": 39.942216,
+            "max": 41.454175
+          },
+          "space_observation_ms": {
+            "samples": 5,
+            "median": 0.018292,
+            "p95": 0.01975,
+            "min": 0.017292,
+            "max": 0.01975
+          },
+          "cancellation": {
+            "attempts": 3,
+            "cancelled": 3,
+            "completed_before_cancel": 0,
+            "completed_without_observing_cancel": 0,
+            "response_observed": true,
+            "latency_ms": {
+              "samples": 3,
+              "median": 0.030125,
+              "p95": 0.042249999999999996,
+              "min": 0.022500000000000003,
+              "max": 0.042249999999999996
+            },
+            "process_wall_ms": {
+              "samples": 3,
+              "median": 24.23062501475215,
+              "p95": 24.302083998918533,
+              "min": 24.080249946564436,
+              "max": 24.302083998918533
+            }
+          },
+          "paired_serial_scan_ms": {
+            "samples": 5,
+            "median": 43.451833,
+            "p95": 43.774750000000004,
+            "min": 43.071083,
+            "max": 43.774750000000004
+          },
+          "candidate_over_paired_serial": 1.1066007963346447,
+          "report": "deep-tree-workers-8-vs-serial.json"
+        }
+      ],
+      "current_serial": {
+        "scan_ms": {
+          "samples": 5,
+          "median": 43.982875,
+          "p95": 46.925416,
+          "min": 42.347791,
+          "max": 46.925416
+        },
+        "rss_bytes": {
+          "samples": 5,
+          "median": 18366464,
+          "p95": 18399232,
+          "min": 18333696,
+          "max": 18399232
+        },
+        "metadata_calls": {
+          "samples": 5,
+          "median": 130,
+          "p95": 130,
+          "min": 130,
+          "max": 130
+        },
+        "metadata_ms": {
+          "samples": 5,
+          "median": 0.666336,
+          "p95": 0.74066,
+          "min": 0.615547,
+          "max": 0.74066
+        },
+        "directory_ms": {
+          "samples": 5,
+          "median": 43.066752,
+          "p95": 45.887337,
+          "min": 41.408248,
+          "max": 45.887337
+        },
+        "space_observation_ms": {
+          "samples": 5,
+          "median": 0.019333,
+          "p95": 0.022041,
+          "min": 0.018208,
+          "max": 0.022041
+        },
+        "cancellation": {
+          "attempts": 3,
+          "cancelled": 3,
+          "completed_before_cancel": 0,
+          "completed_without_observing_cancel": 0,
+          "response_observed": true,
+          "latency_ms": {
+            "samples": 3,
+            "median": 0.030917000000000004,
+            "p95": 0.454125,
+            "min": 0.02375,
+            "max": 0.454125
+          },
+          "process_wall_ms": {
+            "samples": 3,
+            "median": 24.16033297777176,
+            "p95": 24.351667030714452,
+            "min": 24.065208970569074,
+            "max": 24.351667030714452
+          }
+        }
+      },
+      "old_v0_1_2": {
+        "scan_ms": {
+          "samples": 5,
+          "median": 27.530874999999998,
+          "p95": 27.849625,
+          "min": 25.593291,
+          "max": 27.849625
+        },
+        "rss_bytes": {
+          "samples": 5,
+          "median": 17661952,
+          "p95": 17711104,
+          "min": 17629184,
+          "max": 17711104
+        },
+        "metadata_calls": {
+          "samples": 5,
+          "median": 130,
+          "p95": 130,
+          "min": 130,
+          "max": 130
+        },
+        "metadata_ms": {
+          "samples": 5,
+          "median": 0.631455,
+          "p95": 0.651674,
+          "min": 0.594163,
+          "max": 0.651674
+        },
+        "directory_ms": {
+          "samples": 5,
+          "median": 26.664172,
+          "p95": 26.960961,
+          "min": 24.735839,
+          "max": 26.960961
+        },
+        "space_observation_ms": null,
+        "cancellation": {
+          "attempts": 3,
+          "cancelled": 3,
+          "completed_before_cancel": 0,
+          "completed_without_observing_cancel": 0,
+          "response_observed": true,
+          "latency_ms": {
+            "samples": 3,
+            "median": 0.027,
+            "p95": 0.027167,
+            "min": 0.02225,
+            "max": 0.027167
+          },
+          "process_wall_ms": {
+            "samples": 3,
+            "median": 24.277166929095984,
+            "p95": 24.3053330341354,
+            "min": 24.139082990586758,
+            "max": 24.3053330341354
+          }
+        }
+      },
+      "current_serial_over_old": 1.5975836220243635,
+      "cross_configuration_digest_validated": true,
+      "digest_v1": "d6ec225039d4c1242c14f0b5047dcb18a3957359a3003d7dfa324078f5ac2525"
+    },
+    {
+      "fixture": "mixed",
+      "expected": {
+        "nodes": 10073,
+        "files": 10006,
+        "directories": 67,
+        "boundaries": 4,
+        "hidden_entries": 1438,
+        "hardlinked_file_entries": 2,
+        "metadata_errors": 0,
+        "read_directory_errors": 0,
+        "kinds": {
+          "directory": 67,
+          "file": 10002,
+          "symlink": 4,
+          "other": 0
+        },
+        "logical_bytes": 8825347,
+        "expected_complete": false,
+        "inventory_digest": "578a2d5fcab14e493dd8e21d9b029463c9c10a94730f21d3d987bd76ec5f93a2"
+      },
+      "async": [
+        {
+          "workers": 1,
+          "scan_ms": {
+            "samples": 5,
+            "median": 44.394208,
+            "p95": 45.203291,
+            "min": 43.764166,
+            "max": 45.203291
+          },
+          "rss_bytes": {
+            "samples": 5,
+            "median": 16711680,
+            "p95": 16777216,
+            "min": 16695296,
+            "max": 16777216
+          },
+          "metadata_calls": {
+            "samples": 5,
+            "median": 72,
+            "p95": 72,
+            "min": 72,
+            "max": 72
+          },
+          "metadata_ms": {
+            "samples": 5,
+            "median": 0.212832,
+            "p95": 0.218839,
+            "min": 0.206419,
+            "max": 0.218839
+          },
+          "directory_ms": {
+            "samples": 5,
+            "median": 41.356582,
+            "p95": 42.242666,
+            "min": 40.761251,
+            "max": 42.242666
+          },
+          "space_observation_ms": {
+            "samples": 5,
+            "median": 0.017584,
+            "p95": 0.018208,
+            "min": 0.015959,
+            "max": 0.018208
+          },
+          "cancellation": {
+            "attempts": 3,
+            "cancelled": 3,
+            "completed_before_cancel": 0,
+            "completed_without_observing_cancel": 0,
+            "response_observed": true,
+            "latency_ms": {
+              "samples": 3,
+              "median": 0.256958,
+              "p95": 0.5527909999999999,
+              "min": 0.030708,
+              "max": 0.5527909999999999
+            },
+            "process_wall_ms": {
+              "samples": 3,
+              "median": 23.89099996071309,
+              "p95": 24.16345791425556,
+              "min": 22.020582924596965,
+              "max": 24.16345791425556
+            }
+          },
+          "paired_serial_scan_ms": {
+            "samples": 5,
+            "median": 45.012875,
+            "p95": 45.262875,
+            "min": 44.163292,
+            "max": 45.262875
+          },
+          "candidate_over_paired_serial": 0.9862557768194099,
+          "report": "mixed-workers-1-vs-serial.json"
+        },
+        {
+          "workers": 2,
+          "scan_ms": {
+            "samples": 5,
+            "median": 42.404583,
+            "p95": 44.594417,
+            "min": 40.875167,
+            "max": 44.594417
+          },
+          "rss_bytes": {
+            "samples": 5,
+            "median": 16842752,
+            "p95": 16908288,
+            "min": 16695296,
+            "max": 16908288
+          },
+          "metadata_calls": {
+            "samples": 5,
+            "median": 72,
+            "p95": 72,
+            "min": 72,
+            "max": 72
+          },
+          "metadata_ms": {
+            "samples": 5,
+            "median": 0.22233,
+            "p95": 0.225668,
+            "min": 0.221215,
+            "max": 0.225668
+          },
+          "directory_ms": {
+            "samples": 5,
+            "median": 79.421501,
+            "p95": 83.570249,
+            "min": 76.165337,
+            "max": 83.570249
+          },
+          "space_observation_ms": {
+            "samples": 5,
+            "median": 0.017667,
+            "p95": 0.020458,
+            "min": 0.016583,
+            "max": 0.020458
+          },
+          "cancellation": {
+            "attempts": 3,
+            "cancelled": 3,
+            "completed_before_cancel": 0,
+            "completed_without_observing_cancel": 0,
+            "response_observed": true,
+            "latency_ms": {
+              "samples": 3,
+              "median": 0.317917,
+              "p95": 0.598667,
+              "min": 0.113125,
+              "max": 0.598667
+            },
+            "process_wall_ms": {
+              "samples": 3,
+              "median": 24.072499945759773,
+              "p95": 24.142042035236955,
+              "min": 23.98320904467255,
+              "max": 24.142042035236955
+            }
+          },
+          "paired_serial_scan_ms": {
+            "samples": 5,
+            "median": 47.029250000000005,
+            "p95": 49.519665999999994,
+            "min": 44.636083,
+            "max": 49.519665999999994
+          },
+          "candidate_over_paired_serial": 0.9016640282377456,
+          "report": "mixed-workers-2-vs-serial.json"
+        },
+        {
+          "workers": 4,
+          "scan_ms": {
+            "samples": 5,
+            "median": 35.331833,
+            "p95": 37.424209,
+            "min": 34.51216599999999,
+            "max": 37.424209
+          },
+          "rss_bytes": {
+            "samples": 5,
+            "median": 17137664,
+            "p95": 17268736,
+            "min": 16990208,
+            "max": 17268736
+          },
+          "metadata_calls": {
+            "samples": 5,
+            "median": 72,
+            "p95": 72,
+            "min": 72,
+            "max": 72
+          },
+          "metadata_ms": {
+            "samples": 5,
+            "median": 0.217047,
+            "p95": 0.272459,
+            "min": 0.211746,
+            "max": 0.272459
+          },
+          "directory_ms": {
+            "samples": 5,
+            "median": 130.384711,
+            "p95": 138.598996,
+            "min": 127.826379,
+            "max": 138.598996
+          },
+          "space_observation_ms": {
+            "samples": 5,
+            "median": 0.017458,
+            "p95": 0.018666,
+            "min": 0.016333,
+            "max": 0.018666
+          },
+          "cancellation": {
+            "attempts": 3,
+            "cancelled": 3,
+            "completed_before_cancel": 0,
+            "completed_without_observing_cancel": 0,
+            "response_observed": true,
+            "latency_ms": {
+              "samples": 3,
+              "median": 0.667084,
+              "p95": 1.1857499999999999,
+              "min": 0.461459,
+              "max": 1.1857499999999999
+            },
+            "process_wall_ms": {
+              "samples": 3,
+              "median": 22.175790974870324,
+              "p95": 22.292832960374653,
+              "min": 21.85424999333918,
+              "max": 22.292832960374653
+            }
+          },
+          "paired_serial_scan_ms": {
+            "samples": 5,
+            "median": 45.464999999999996,
+            "p95": 46.43275,
+            "min": 43.499500000000005,
+            "max": 46.43275
+          },
+          "candidate_over_paired_serial": 0.7771215880347522,
+          "report": "mixed-workers-4-vs-serial.json"
+        },
+        {
+          "workers": 8,
+          "scan_ms": {
+            "samples": 5,
+            "median": 40.840166999999994,
+            "p95": 44.412042,
+            "min": 38.236791,
+            "max": 44.412042
+          },
+          "rss_bytes": {
+            "samples": 5,
+            "median": 18055168,
+            "p95": 18055168,
+            "min": 17907712,
+            "max": 18055168
+          },
+          "metadata_calls": {
+            "samples": 5,
+            "median": 72,
+            "p95": 72,
+            "min": 72,
+            "max": 72
+          },
+          "metadata_ms": {
+            "samples": 5,
+            "median": 0.4885,
+            "p95": 0.540749,
+            "min": 0.40367,
+            "max": 0.540749
+          },
+          "directory_ms": {
+            "samples": 5,
+            "median": 303.671585,
+            "p95": 330.129755,
+            "min": 280.129671,
+            "max": 330.129755
+          },
+          "space_observation_ms": {
+            "samples": 5,
+            "median": 0.020958,
+            "p95": 0.025542,
+            "min": 0.019292,
+            "max": 0.025542
+          },
+          "cancellation": {
+            "attempts": 3,
+            "cancelled": 3,
+            "completed_before_cancel": 0,
+            "completed_without_observing_cancel": 0,
+            "response_observed": true,
+            "latency_ms": {
+              "samples": 3,
+              "median": 1.118959,
+              "p95": 1.409416,
+              "min": 1.078875,
+              "max": 1.409416
+            },
+            "process_wall_ms": {
+              "samples": 3,
+              "median": 22.323208977468312,
+              "p95": 22.942916955798864,
+              "min": 21.363999927416444,
+              "max": 22.942916955798864
+            }
+          },
+          "paired_serial_scan_ms": {
+            "samples": 5,
+            "median": 49.58475,
+            "p95": 54.819292,
+            "min": 43.108708,
+            "max": 54.819292
+          },
+          "candidate_over_paired_serial": 0.8236437009362757,
+          "report": "mixed-workers-8-vs-serial.json"
+        }
+      ],
+      "current_serial": {
+        "scan_ms": {
+          "samples": 5,
+          "median": 51.437999999999995,
+          "p95": 53.226875,
+          "min": 43.335416,
+          "max": 53.226875
+        },
+        "rss_bytes": {
+          "samples": 5,
+          "median": 15843328,
+          "p95": 15974400,
+          "min": 15826944,
+          "max": 15974400
+        },
+        "metadata_calls": {
+          "samples": 5,
+          "median": 72,
+          "p95": 72,
+          "min": 72,
+          "max": 72
+        },
+        "metadata_ms": {
+          "samples": 5,
+          "median": 0.260581,
+          "p95": 0.282245,
+          "min": 0.183043,
+          "max": 0.282245
+        },
+        "directory_ms": {
+          "samples": 5,
+          "median": 50.931166,
+          "p95": 52.752,
+          "min": 43.008499,
+          "max": 52.752
+        },
+        "space_observation_ms": {
+          "samples": 5,
+          "median": 0.021459,
+          "p95": 0.030875,
+          "min": 0.017334,
+          "max": 0.030875
+        },
+        "cancellation": {
+          "attempts": 3,
+          "cancelled": 3,
+          "completed_before_cancel": 0,
+          "completed_without_observing_cancel": 0,
+          "response_observed": true,
+          "latency_ms": {
+            "samples": 3,
+            "median": 0.176125,
+            "p95": 0.235625,
+            "min": 0.077042,
+            "max": 0.235625
+          },
+          "process_wall_ms": {
+            "samples": 3,
+            "median": 24.212917080149055,
+            "p95": 24.628667044453323,
+            "min": 21.440166980028152,
+            "max": 24.628667044453323
+          }
+        }
+      },
+      "old_v0_1_2": {
+        "scan_ms": {
+          "samples": 5,
+          "median": 24.586791,
+          "p95": 25.447457999999997,
+          "min": 24.244208,
+          "max": 25.447457999999997
+        },
+        "rss_bytes": {
+          "samples": 5,
+          "median": 15106048,
+          "p95": 15122432,
+          "min": 15056896,
+          "max": 15122432
+        },
+        "metadata_calls": {
+          "samples": 5,
+          "median": 72,
+          "p95": 72,
+          "min": 72,
+          "max": 72
+        },
+        "metadata_ms": {
+          "samples": 5,
+          "median": 0.220381,
+          "p95": 0.235458,
+          "min": 0.189796,
+          "max": 0.235458
+        },
+        "directory_ms": {
+          "samples": 5,
+          "median": 24.177043,
+          "p95": 25.05587,
+          "min": 23.91359,
+          "max": 25.05587
+        },
+        "space_observation_ms": null,
+        "cancellation": {
+          "attempts": 3,
+          "cancelled": 3,
+          "completed_before_cancel": 0,
+          "completed_without_observing_cancel": 0,
+          "response_observed": true,
+          "latency_ms": {
+            "samples": 3,
+            "median": 0.08449999999999999,
+            "p95": 0.20066699999999998,
+            "min": 0.065125,
+            "max": 0.20066699999999998
+          },
+          "process_wall_ms": {
+            "samples": 3,
+            "median": 24.36533395666629,
+            "p95": 24.476499995216727,
+            "min": 24.31879099458456,
+            "max": 24.476499995216727
+          }
+        }
+      },
+      "current_serial_over_old": 2.092098964846612,
+      "cross_configuration_digest_validated": true,
+      "digest_v1": "3978d8e3191b0bf44156fdda3966709cdad0939221413b900848c2caea7c4f8f"
+    },
+    {
+      "fixture": "directory-heavy",
+      "expected": {
+        "nodes": 20001,
+        "files": 10000,
+        "directories": 10001,
+        "boundaries": 0,
+        "hidden_entries": 0,
+        "hardlinked_file_entries": 0,
+        "metadata_errors": 0,
+        "read_directory_errors": 0,
+        "kinds": {
+          "directory": 10001,
+          "file": 10000,
+          "symlink": 0,
+          "other": 0
+        },
+        "logical_bytes": 1280000,
+        "expected_complete": true,
+        "inventory_digest": "6ce3bb562d246eb1ba4603ac68fb038f6042661f43dd6326909bd6ecf371c140"
+      },
+      "async": [
+        {
+          "workers": 1,
+          "scan_ms": {
+            "samples": 5,
+            "median": 1681.2506250000001,
+            "p95": 1746.0225409999998,
+            "min": 1667.867125,
+            "max": 1746.0225409999998
+          },
+          "rss_bytes": {
+            "samples": 5,
+            "median": 27803648,
+            "p95": 27918336,
+            "min": 27754496,
+            "max": 27918336
+          },
+          "metadata_calls": {
+            "samples": 5,
+            "median": 10002,
+            "p95": 10002,
+            "min": 10002,
+            "max": 10002
+          },
+          "metadata_ms": {
+            "samples": 5,
+            "median": 26.872154,
+            "p95": 28.100914,
+            "min": 25.387341,
+            "max": 28.100914
+          },
+          "directory_ms": {
+            "samples": 5,
+            "median": 1290.677223,
+            "p95": 1346.022355,
+            "min": 1273.961384,
+            "max": 1346.022355
+          },
+          "space_observation_ms": {
+            "samples": 5,
+            "median": 0.016709,
+            "p95": 0.023083,
+            "min": 0.016042,
+            "max": 0.023083
+          },
+          "cancellation": {
+            "attempts": 3,
+            "cancelled": 3,
+            "completed_before_cancel": 0,
+            "completed_without_observing_cancel": 0,
+            "response_observed": true,
+            "latency_ms": {
+              "samples": 3,
+              "median": 1.931166,
+              "p95": 2.611042,
+              "min": 1.649459,
+              "max": 2.611042
+            },
+            "process_wall_ms": {
+              "samples": 3,
+              "median": 24.347665952518582,
+              "p95": 24.430165998637676,
+              "min": 24.14145797956735,
+              "max": 24.430165998637676
+            }
+          },
+          "paired_serial_scan_ms": {
+            "samples": 5,
+            "median": 1355.402834,
+            "p95": 1391.2608340000002,
+            "min": 1267.616333,
+            "max": 1391.2608340000002
+          },
+          "candidate_over_paired_serial": 1.2404066029863414,
+          "report": "directory-heavy-workers-1-vs-serial.json"
+        },
+        {
+          "workers": 2,
+          "scan_ms": {
+            "samples": 5,
+            "median": 899.439333,
+            "p95": 1004.1007920000001,
+            "min": 888.0796250000001,
+            "max": 1004.1007920000001
+          },
+          "rss_bytes": {
+            "samples": 5,
+            "median": 27885568,
+            "p95": 27967488,
+            "min": 27787264,
+            "max": 27967488
+          },
+          "metadata_calls": {
+            "samples": 5,
+            "median": 10002,
+            "p95": 10002,
+            "min": 10002,
+            "max": 10002
+          },
+          "metadata_ms": {
+            "samples": 5,
+            "median": 25.077379,
+            "p95": 28.20756,
+            "min": 25.018413,
+            "max": 28.20756
+          },
+          "directory_ms": {
+            "samples": 5,
+            "median": 1319.182296,
+            "p95": 1476.870876,
+            "min": 1303.794463,
+            "max": 1476.870876
+          },
+          "space_observation_ms": {
+            "samples": 5,
+            "median": 0.020125,
+            "p95": 0.025708,
+            "min": 0.016292,
+            "max": 0.025708
+          },
+          "cancellation": {
+            "attempts": 3,
+            "cancelled": 3,
+            "completed_before_cancel": 0,
+            "completed_without_observing_cancel": 0,
+            "response_observed": true,
+            "latency_ms": {
+              "samples": 3,
+              "median": 1.909708,
+              "p95": 2.1525,
+              "min": 1.619,
+              "max": 2.1525
+            },
+            "process_wall_ms": {
+              "samples": 3,
+              "median": 24.159125052392483,
+              "p95": 24.451332981698215,
+              "min": 23.99945806246251,
+              "max": 24.451332981698215
+            }
+          },
+          "paired_serial_scan_ms": {
+            "samples": 5,
+            "median": 1279.393792,
+            "p95": 1322.335,
+            "min": 1209.405208,
+            "max": 1322.335
+          },
+          "candidate_over_paired_serial": 0.7030199291446929,
+          "report": "directory-heavy-workers-2-vs-serial.json"
+        },
+        {
+          "workers": 4,
+          "scan_ms": {
+            "samples": 5,
+            "median": 635.840417,
+            "p95": 683.985916,
+            "min": 583.8140000000001,
+            "max": 683.985916
+          },
+          "rss_bytes": {
+            "samples": 5,
+            "median": 27983872,
+            "p95": 28098560,
+            "min": 27541504,
+            "max": 28098560
+          },
+          "metadata_calls": {
+            "samples": 5,
+            "median": 10002,
+            "p95": 10002,
+            "min": 10002,
+            "max": 10002
+          },
+          "metadata_ms": {
+            "samples": 5,
+            "median": 30.282761,
+            "p95": 33.764595,
+            "min": 26.589289,
+            "max": 33.764595
+          },
+          "directory_ms": {
+            "samples": 5,
+            "median": 1858.401899,
+            "p95": 1984.451116,
+            "min": 1696.836356,
+            "max": 1984.451116
+          },
+          "space_observation_ms": {
+            "samples": 5,
+            "median": 0.019167,
+            "p95": 0.019291,
+            "min": 0.017958,
+            "max": 0.019291
+          },
+          "cancellation": {
+            "attempts": 3,
+            "cancelled": 3,
+            "completed_before_cancel": 0,
+            "completed_without_observing_cancel": 0,
+            "response_observed": true,
+            "latency_ms": {
+              "samples": 3,
+              "median": 1.658916,
+              "p95": 2.152208,
+              "min": 1.593042,
+              "max": 2.152208
+            },
+            "process_wall_ms": {
+              "samples": 3,
+              "median": 24.153250036761165,
+              "p95": 24.25991604104638,
+              "min": 20.916041918098927,
+              "max": 24.25991604104638
+            }
+          },
+          "paired_serial_scan_ms": {
+            "samples": 5,
+            "median": 1290.130416,
+            "p95": 1295.2409999999998,
+            "min": 1247.6685830000001,
+            "max": 1295.2409999999998
+          },
+          "candidate_over_paired_serial": 0.4928497221012732,
+          "report": "directory-heavy-workers-4-vs-serial.json"
+        },
+        {
+          "workers": 8,
+          "scan_ms": {
+            "samples": 5,
+            "median": 520.85575,
+            "p95": 543.753,
+            "min": 501.02279100000004,
+            "max": 543.753
+          },
+          "rss_bytes": {
+            "samples": 5,
+            "median": 28311552,
+            "p95": 28966912,
+            "min": 27836416,
+            "max": 28966912
+          },
+          "metadata_calls": {
+            "samples": 5,
+            "median": 10002,
+            "p95": 10002,
+            "min": 10002,
+            "max": 10002
+          },
+          "metadata_ms": {
+            "samples": 5,
+            "median": 37.263419,
+            "p95": 39.426951,
+            "min": 35.410081,
+            "max": 39.426951
+          },
+          "directory_ms": {
+            "samples": 5,
+            "median": 3177.6969,
+            "p95": 3303.061195,
+            "min": 3040.169274,
+            "max": 3303.061195
+          },
+          "space_observation_ms": {
+            "samples": 5,
+            "median": 0.021749,
+            "p95": 0.022958,
+            "min": 0.017375,
+            "max": 0.022958
+          },
+          "cancellation": {
+            "attempts": 3,
+            "cancelled": 3,
+            "completed_before_cancel": 0,
+            "completed_without_observing_cancel": 0,
+            "response_observed": true,
+            "latency_ms": {
+              "samples": 3,
+              "median": 2.406333,
+              "p95": 3.291792,
+              "min": 2.2902500000000003,
+              "max": 3.291792
+            },
+            "process_wall_ms": {
+              "samples": 3,
+              "median": 24.27379204891622,
+              "p95": 24.492249940522015,
+              "min": 24.14450002834201,
+              "max": 24.492249940522015
+            }
+          },
+          "paired_serial_scan_ms": {
+            "samples": 5,
+            "median": 1276.465208,
+            "p95": 1324.502833,
+            "min": 1269.525,
+            "max": 1324.502833
+          },
+          "candidate_over_paired_serial": 0.4080453949983413,
+          "report": "directory-heavy-workers-8-vs-serial.json"
+        }
+      ],
+      "current_serial": {
+        "scan_ms": {
+          "samples": 5,
+          "median": 1284.81875,
+          "p95": 1326.296875,
+          "min": 1265.935334,
+          "max": 1326.296875
+        },
+        "rss_bytes": {
+          "samples": 5,
+          "median": 26525696,
+          "p95": 26542080,
+          "min": 26460160,
+          "max": 26542080
+        },
+        "metadata_calls": {
+          "samples": 5,
+          "median": 10002,
+          "p95": 10002,
+          "min": 10002,
+          "max": 10002
+        },
+        "metadata_ms": {
+          "samples": 5,
+          "median": 23.515486,
+          "p95": 24.158367,
+          "min": 23.263673,
+          "max": 24.158367
+        },
+        "directory_ms": {
+          "samples": 5,
+          "median": 1254.992835,
+          "p95": 1295.765788,
+          "min": 1236.279728,
+          "max": 1295.765788
+        },
+        "space_observation_ms": {
+          "samples": 5,
+          "median": 0.019874,
+          "p95": 0.020501,
+          "min": 0.018166,
+          "max": 0.020501
+        },
+        "cancellation": {
+          "attempts": 3,
+          "cancelled": 3,
+          "completed_before_cancel": 0,
+          "completed_without_observing_cancel": 0,
+          "response_observed": true,
+          "latency_ms": {
+            "samples": 3,
+            "median": 2.215458,
+            "p95": 2.466666,
+            "min": 1.9933329999999998,
+            "max": 2.466666
+          },
+          "process_wall_ms": {
+            "samples": 3,
+            "median": 24.271999951452017,
+            "p95": 24.348416947759688,
+            "min": 24.26620910409838,
+            "max": 24.348416947759688
+          }
+        }
+      },
+      "old_v0_1_2": {
+        "scan_ms": {
+          "samples": 5,
+          "median": 1215.0505,
+          "p95": 1226.484167,
+          "min": 1185.912166,
+          "max": 1226.484167
+        },
+        "rss_bytes": {
+          "samples": 5,
+          "median": 25542656,
+          "p95": 25575424,
+          "min": 25427968,
+          "max": 25575424
+        },
+        "metadata_calls": {
+          "samples": 5,
+          "median": 10002,
+          "p95": 10002,
+          "min": 10002,
+          "max": 10002
+        },
+        "metadata_ms": {
+          "samples": 5,
+          "median": 23.614821,
+          "p95": 23.917743,
+          "min": 22.220304,
+          "max": 23.917743
+        },
+        "directory_ms": {
+          "samples": 5,
+          "median": 1185.100111,
+          "p95": 1198.536769,
+          "min": 1155.886651,
+          "max": 1198.536769
+        },
+        "space_observation_ms": null,
+        "cancellation": {
+          "attempts": 3,
+          "cancelled": 3,
+          "completed_before_cancel": 0,
+          "completed_without_observing_cancel": 0,
+          "response_observed": true,
+          "latency_ms": {
+            "samples": 3,
+            "median": 0.268042,
+            "p95": 1.111416,
+            "min": 0.164334,
+            "max": 1.111416
+          },
+          "process_wall_ms": {
+            "samples": 3,
+            "median": 24.376709014177322,
+            "p95": 24.442833033390343,
+            "min": 24.225790984928608,
+            "max": 24.442833033390343
+          }
+        }
+      },
+      "current_serial_over_old": 1.057420041389226,
+      "cross_configuration_digest_validated": true,
+      "digest_v1": "b68323b93a1663b511b11a6d8fe5ff88bc610586dffb426f3461e7301dfa9d91"
+    }
+  ],
+  "fixtures_cleaned": true
+}
