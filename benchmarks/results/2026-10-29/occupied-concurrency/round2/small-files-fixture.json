@@ -1,0 +1,36 @@
+{
+  "kind": "small-files",
+  "seed": 20261029,
+  "parameters": {
+    "regular_files": 100000,
+    "file_bytes": 128,
+    "files_per_directory": 1000
+  },
+  "features": {
+    "symlinks": 0,
+    "hardlinks": 0,
+    "symlinks_unavailable": false,
+    "hardlinks_unavailable": false
+  },
+  "create_ms": 17162.36941702664,
+  "expected": {
+    "nodes": 100101,
+    "files": 100000,
+    "directories": 101,
+    "boundaries": 0,
+    "hidden_entries": 0,
+    "hardlinked_file_entries": 0,
+    "metadata_errors": 0,
+    "read_directory_errors": 0,
+    "kinds": {
+      "directory": 101,
+      "file": 100000,
+      "symlink": 0,
+      "other": 0
+    },
+    "logical_bytes": 12800000,
+    "expected_complete": true,
+    "inventory_digest": "06295f0c366dc76445140aa97b26a911a06c7e6b67c03ab49f2c4140be2e7d77"
+  },
+  "inventory_ms": 634.8815839737654
+}

@@ -1,0 +1,28 @@
+{
+  "source": "omd-app-icon-v1.png",
+  "source_size": [
+    1254,
+    1254
+  ],
+  "pillow_version": "12.3.0",
+  "ico_sizes": [
+    16,
+    24,
+    32,
+    48,
+    64,
+    128,
+    256
+  ],
+  "window_rgba_size": [
+    64,
+    64
+  ],
+  "sha256": {
+    "omd-app-icon-v1.png": "f42e6f25b1828740929b580af21a49b7f72d216ff17b15ade414488527c6383c",
+    "omd.icns": "def17882e6a2a31f522290ee132b8ba331ec016976a5e6ed5775d1116ba93709",
+    "omd.ico": "397bf3a0b00330f9b5b8e95989e3f245952c83d9fe1f52b538a5550f92ec7bf8",
+    "omd-window-64.png": "e2066768d6ea3099ec197de24c1c9d9afcb450aca3856e6d23821a9c5e7a70c5",
+    "omd-window-64.rgba": "7ac302c9ca19774bb5202ca959a269c577523c02424eaad58919b427c6d1c17b"
+  }
+}

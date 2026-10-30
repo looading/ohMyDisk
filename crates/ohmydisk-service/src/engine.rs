@@ -3,7 +3,7 @@ use crate::{
     snapshot_cache::{SnapshotCache, SnapshotView},
     store::Store,
 };
-use ohmydisk_core::{cleanup, scan, *};
+use ohmydisk_core::{cleanup, *};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -31,6 +31,8 @@ struct ScanRecord {
     #[serde(default)]
     needs_rescan: bool,
     refresh_job_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    space_accounting: Option<SpaceAccounting>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct PlanRecord {
@@ -47,9 +49,13 @@ pub struct Engine {
     mutations: Mutex<()>,
     cleanup: Mutex<()>,
     cancellations: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    scan_clocks: Mutex<HashMap<String, Instant>>,
     active: AtomicUsize,
     workers: Arc<tokio::sync::Semaphore>,
     snapshots: SnapshotCache,
+    filesystem_budget: Arc<tokio::sync::Semaphore>,
+    query_budget: Arc<tokio::sync::Semaphore>,
+    cold_load_budget: Arc<tokio::sync::Semaphore>,
 }
 impl Engine {
     pub fn open(data_dir: PathBuf, platform: Arc<dyn Platform>) -> Result<Arc<Self>, AppError> {
@@ -63,9 +69,13 @@ impl Engine {
             mutations: Mutex::new(()),
             cleanup: Mutex::new(()),
             cancellations: Mutex::new(HashMap::new()),
+            scan_clocks: Mutex::new(HashMap::new()),
             active: AtomicUsize::new(0),
             workers: Arc::new(tokio::sync::Semaphore::new(2)),
             snapshots: SnapshotCache::default(),
+            filesystem_budget: Arc::new(tokio::sync::Semaphore::new(8)),
+            query_budget: Arc::new(tokio::sync::Semaphore::new(2)),
+            cold_load_budget: Arc::new(tokio::sync::Semaphore::new(2)),
         });
         engine.recover_scan_staleness()?;
         Ok(engine)
@@ -83,7 +93,7 @@ impl Engine {
         }
         match op {
             "get_capabilities" => Ok(
-                json!({"api_version":1,"platform":std::env::consts::OS,"logical_bytes":true,"allocated_bytes":cfg!(any(unix,windows)),"cleanup_modes":["trash","permanent"],"authorization_model":"host_confirmed","scope_policy":{"absolute_local_roots":true,"follow_links":false,"cross_filesystems":false,"protected_state_directory":NativePath::new(&self.data_dir)},"snapshots":"immutable","space_reclaimed":"observe_volume_available_bytes; trash does not promise freed space"}),
+                json!({"api_version":1,"application_version":env!("CARGO_PKG_VERSION"),"platform":std::env::consts::OS,"logical_bytes":true,"allocated_bytes":cfg!(any(unix,windows)),"cleanup_modes":["trash","permanent"],"authorization_model":"host_confirmed","scope_policy":{"absolute_local_roots":true,"follow_links":false,"cross_filesystems":false,"protected_state_directory":NativePath::new(&self.data_dir)},"snapshots":"immutable","size_metrics":["logical","allocated","attributed"],"default_display_metric":"attributed","legacy_query_default":"logical","progress_bytes_metric":"logical","scan_concurrency":{"directory_workers":4,"maximum_directory_workers":8,"global_filesystem_workers":8,"expensive_queries":2},"space_reclaimed":"observe_volume_available_bytes; trash does not promise freed space"}),
             ),
             "list_sources" => Ok(json!({"items":self.platform.volumes()?})),
             "start_scan" => self.start_scan(args),
@@ -121,11 +131,12 @@ impl Engine {
                     if let Some(cancel) = self.cancellations.lock().map_err(poison)?.get(id) {
                         cancel.store(true, Ordering::SeqCst);
                     }
-                    job = self.store.update::<Job>("job", id, |j| {
+                    self.store.update::<Job>("job", id, |j| {
                         if active_state(&j.state) {
                             j.state = "cancel_requested".into();
                         }
                     })?;
+                    job = self.job(id)?;
                 }
                 Ok(json!(job))
             }
@@ -142,7 +153,17 @@ impl Engine {
         }
     }
     fn job(&self, id: &str) -> Result<Job, AppError> {
-        self.store.get("job", id)?.ok_or_else(|| missing("job"))
+        let elapsed_ms = self
+            .scan_clocks
+            .lock()
+            .map_err(poison)?
+            .get(id)
+            .map(|started| duration_ms(started.elapsed()));
+        let mut job: Job = self.store.get("job", id)?.ok_or_else(|| missing("job"))?;
+        if job.kind == "scan" && active_state(&job.state) && elapsed_ms.is_some() {
+            job.elapsed_ms = elapsed_ms;
+        }
+        Ok(job)
     }
     fn scan_record(&self, id: &str) -> Result<ScanRecord, AppError> {
         self.store.get("scan", id)?.ok_or_else(|| missing("scan"))
@@ -177,6 +198,20 @@ impl Engine {
                     filter.scope_node_id = Some(api::text(&args, "node_id")?.into());
                     filter.descendants = false;
                 }
+                let expensive = expensive_query(&filter, &snapshot.root_id);
+                // Classify after loading: root/children fast paths bypass the
+                // CPU budget, but unfiltered non-root descendants are O(N).
+                let _permit = if expensive {
+                    Some(
+                        tokio::runtime::Handle::current()
+                            .block_on(self.query_budget.clone().acquire_owned())
+                            .map_err(|error| {
+                                AppError::new("service_unavailable", error.to_string())
+                            })?,
+                    )
+                } else {
+                    None
+                };
                 let mut value = snapshot.query(&filter)?;
                 value["known_stale"] = json!(self.scan_record(&snapshot.scan_id)?.known_stale);
                 Ok(value)
@@ -184,11 +219,19 @@ impl Engine {
         }
     }
     fn snapshot_by_id(&self, id: &str) -> Result<Arc<SnapshotView>, AppError> {
-        self.snapshots.get_or_load(id, || {
-            self.store
-                .get_snapshot(id)?
-                .ok_or_else(|| missing("snapshot"))
-        })
+        self.snapshots.get_or_load_guarded(
+            id,
+            || {
+                tokio::runtime::Handle::current()
+                    .block_on(self.cold_load_budget.clone().acquire_owned())
+                    .map_err(|error| AppError::new("service_unavailable", error.to_string()))
+            },
+            || {
+                self.store
+                    .get_snapshot(id)?
+                    .ok_or_else(|| missing("snapshot"))
+            },
+        )
     }
     fn snapshot(&self, id: &str) -> Result<Arc<SnapshotView>, AppError> {
         let record = self.scan_record(id)?;
@@ -203,7 +246,7 @@ impl Engine {
     fn scan_summary(&self, record: &ScanRecord) -> Result<Value, AppError> {
         let job = self.job(&record.job_id)?;
         Ok(
-            json!({"scan_id":record.scan_id,"snapshot_id":record.snapshot_id,"root_id":record.root_id,"root_path":record.root_path,"logical_bytes":record.logical_bytes,"complete":record.complete,"created_at":record.created_at,"known_stale":record.known_stale,"needs_rescan":record.needs_rescan,"refresh_job_id":record.refresh_job_id,"job_id":record.job_id,"state":job.state,"issue_count":record.issue_count,"size_metric":"logical_bytes","captured_at":record.created_at}),
+            json!({"scan_id":record.scan_id,"snapshot_id":record.snapshot_id,"root_id":record.root_id,"root_path":record.root_path,"logical_bytes":record.logical_bytes,"complete":record.complete,"created_at":record.created_at,"started_at":job.created_at,"elapsed_ms":job.elapsed_ms,"finished_at":job.finished_at,"known_stale":record.known_stale,"needs_rescan":record.needs_rescan,"refresh_job_id":record.refresh_job_id,"job_id":record.job_id,"state":job.state,"issue_count":record.issue_count,"size_metric":"logical_bytes","captured_at":record.created_at,"space_accounting":record.space_accounting,"default_display_metric":"attributed"}),
         )
     }
     fn start_scan(self: &Arc<Self>, args: Value) -> Result<Value, AppError> {
@@ -212,6 +255,19 @@ impl Engine {
         if let Some(old) = self.store.request("start_scan", key, &digest)? {
             return Ok(old);
         }
+        let scan_workers = match args.get("workers") {
+            None => scan_async::ScanOptions::default().workers,
+            Some(value) => value
+                .as_u64()
+                .filter(|workers| (1..=8).contains(workers))
+                .and_then(|workers| usize::try_from(workers).ok())
+                .ok_or_else(|| {
+                    AppError::new(
+                        "invalid_arguments",
+                        "workers must be an integer from 1 to 8",
+                    )
+                })?,
+        };
         let path = path_argument(&args, "root_path")?;
         if !path.is_absolute() {
             return Err(AppError::new(
@@ -234,6 +290,7 @@ impl Engine {
             known_stale: false,
             needs_rescan: false,
             refresh_job_id: None,
+            space_accounting: None,
         };
         let job = new_job(&job_id, "scan", json!({"scan_id":scan_id}));
         let response = json!({"scan_id":scan_id,"job_id":job_id});
@@ -247,27 +304,47 @@ impl Engine {
             None,
         )?;
         if accepted {
-            self.launch_scan(job_id, scan_id, path);
+            self.launch_scan(job_id, scan_id, path, scan_workers);
         }
         Ok(response)
     }
-    fn launch_scan(self: &Arc<Self>, job_id: String, scan_id: String, path: PathBuf) {
+    fn launch_scan(
+        self: &Arc<Self>,
+        job_id: String,
+        scan_id: String,
+        path: PathBuf,
+        scan_workers: usize,
+    ) {
         self.launch(job_id, move |engine, job_id, cancel| {
             let started=Instant::now();
-            let mut last_update=None::<Instant>;
-            let mut progress_writes=0u64;
-            let mut progress_write_ms=0.0;
-            let mut snapshot=scan::scan(&path,engine.platform.as_ref(),&cancel,&mut |mut progress| {
-                let now=Instant::now();
-                // UI progress is noncritical; terminal states and cleanup
-                // started/outcome records retain their existing FULL durability.
-                if progress.phase=="scanning" && last_update.is_some_and(|last|now.duration_since(last)<Duration::from_millis(250)) {return;}
-                if progress.phase=="completed" {progress.phase="saving".into();}
-                let write=Instant::now();
-                if engine.store.update::<Job>("job",&job_id,|j|j.progress=progress).is_ok() {
-                    progress_writes+=1;last_update=Some(now);
-                }
-                progress_write_ms+=write.elapsed().as_secs_f64()*1000.0;
+            let runtime = tokio::runtime::Handle::current();
+            let options = scan_async::ScanOptions { workers: scan_workers, ..Default::default() };
+            let (mut snapshot, progress_writes, progress_write_ms) = runtime.block_on(async {
+                let (sender, mut receiver) = tokio::sync::watch::channel(ScanProgress::default());
+                let writer_engine = engine.clone();
+                let writer_id = job_id.clone();
+                let writer = tokio::spawn(async move {
+                    let mut last_update = None::<Instant>;
+                    let mut writes = 0u64;
+                    let mut elapsed = 0.0;
+                    while receiver.changed().await.is_ok() {
+                        let mut progress = receiver.borrow_and_update().clone();
+                        let now = Instant::now();
+                        if progress.phase == "scanning" && last_update.is_some_and(|last| now.duration_since(last) < Duration::from_millis(250)) { continue; }
+                        if progress.phase == "completed" { progress.phase = "saving".into(); }
+                        let engine = writer_engine.clone(); let id = writer_id.clone();
+                        let start = Instant::now();
+                        if tokio::task::spawn_blocking(move || engine.store.update::<Job>("job", &id, |job| job.progress = progress)).await.is_ok_and(|value| value.is_ok()) {
+                            writes += 1; last_update = Some(now);
+                        }
+                        elapsed += start.elapsed().as_secs_f64() * 1000.0;
+                    }
+                    (writes, elapsed)
+                });
+                let result = scan_async::scan_async(path, engine.platform.clone(), cancel,
+                    options, engine.filesystem_budget.clone(), sender).await;
+                let stats = writer.await.map_err(|error| AppError::new("worker_panic", error.to_string()))?;
+                Ok::<_, AppError>((result?, stats.0, stats.1))
             })?;
             let scan_ms=started.elapsed().as_secs_f64()*1000.0;
             snapshot.scan_id=scan_id.clone();
@@ -280,14 +357,14 @@ impl Engine {
             let snapshot=engine.snapshots.insert(snapshot)?;
             let index_build_ms=indexing.elapsed().as_secs_f64()*1000.0;
             engine.store.update::<ScanRecord>("scan",&scan_id,|r| {
-                r.root_path=snapshot.root_path.clone();r.snapshot_id=Some(snapshot.id.clone());r.root_id=Some(snapshot.root_id.clone());r.complete=snapshot.complete;r.created_at=snapshot.created_at;r.issue_count=snapshot.issues.len();
+                r.root_path=snapshot.root_path.clone();r.snapshot_id=Some(snapshot.id.clone());r.root_id=snapshot.nodes.first().map(|node|node.id.clone());r.space_accounting=snapshot.space_accounting.clone();r.complete=snapshot.complete;r.created_at=snapshot.created_at;r.issue_count=snapshot.issues.len();
                 r.logical_bytes=snapshot.nodes.iter().find(|n|n.id==snapshot.root_id).map_or(0,|n|n.logical_bytes);
             })?;
             engine.store.update::<Job>("job",&job_id,|j|j.result=json!({
                 "scan_id":scan_id,"snapshot_id":snapshot.id,"complete":snapshot.complete,"issue_count":snapshot.issues.len(),
                 "scan_ms":scan_ms,"persist_ms":persist_ms,"progress_writes":progress_writes,"progress_write_ms":progress_write_ms,
                 "snapshot_codec":storage.codec,"snapshot_stored_bytes":storage.stored_bytes,"snapshot_json_bytes":storage.json_bytes,
-                "index_build_ms":index_build_ms,
+                "index_build_ms":index_build_ms,"scan_workers":options.workers,
             }))?;
             Ok(state.into())
         });
@@ -615,6 +692,10 @@ impl Engine {
     where
         F: FnOnce(Arc<Self>, String, Arc<AtomicBool>) -> Result<String, AppError> + Send + 'static,
     {
+        let started = Instant::now();
+        if let Ok(mut clocks) = self.scan_clocks.lock() {
+            clocks.insert(job_id.clone(), started);
+        }
         let cancel = Arc::new(AtomicBool::new(false));
         if let Ok(mut cancellations) = self.cancellations.lock() {
             cancellations.insert(job_id.clone(), cancel.clone());
@@ -648,14 +729,19 @@ impl Engine {
                     .store
                     .update::<Job>("job", &job_id, |j| match result {
                         Ok(state) => {
+                            finish_scan_timing(j, started);
                             j.state = state;
                             j.progress.phase = "finished".into();
                         }
                         Err(error) => {
+                            finish_scan_timing(j, started);
                             j.state = "failed".into();
                             j.error = Some(error);
                         }
                     });
+                if let Ok(mut clocks) = engine.scan_clocks.lock() {
+                    clocks.remove(&job_id);
+                }
                 if let Ok(mut cancellations) = engine.cancellations.lock() {
                     cancellations.remove(&job_id);
                 }
@@ -671,9 +757,20 @@ fn new_job(id: &str, kind: &str, result: Value) -> Job {
         kind: kind.into(),
         state: "queued".into(),
         created_at: now_ms(),
+        elapsed_ms: None,
+        finished_at: None,
         progress: ScanProgress::default(),
         result,
         error: None,
+    }
+}
+fn duration_ms(duration: Duration) -> u64 {
+    duration.as_millis().try_into().unwrap_or(u64::MAX)
+}
+fn finish_scan_timing(job: &mut Job, started: Instant) {
+    if job.kind == "scan" {
+        job.elapsed_ms = Some(duration_ms(started.elapsed()));
+        job.finished_at = Some(now_ms());
     }
 }
 fn active_state(state: &str) -> bool {
@@ -695,5 +792,154 @@ fn path_argument(args: &Value, key: &str) -> Result<PathBuf, AppError> {
             .map_err(serialization)?
             .to_path(),
         None => Err(AppError::new("invalid_arguments", format!("Missing {key}"))),
+    }
+}
+
+fn expensive_query(query: &Query, root_id: &str) -> bool {
+    query.name.is_some()
+        || query.kind.is_some()
+        || query.min_bytes.is_some()
+        || query.max_bytes.is_some()
+        || query.modified_before.is_some()
+        || (query.descendants
+            && query
+                .scope_node_id
+                .as_deref()
+                .is_some_and(|scope| scope != root_id))
+}
+
+#[cfg(test)]
+mod query_budget_tests {
+    use super::*;
+    #[test]
+    fn unfiltered_subtree_queries_are_expensive_but_root_and_children_pages_are_not() {
+        assert!(expensive_query(
+            &Query {
+                scope_node_id: Some("subtree".into()),
+                descendants: true,
+                ..Query::default()
+            },
+            "root"
+        ));
+        assert!(!expensive_query(
+            &Query {
+                scope_node_id: Some("root".into()),
+                descendants: true,
+                ..Query::default()
+            },
+            "root"
+        ));
+        assert!(!expensive_query(
+            &Query {
+                descendants: true,
+                ..Query::default()
+            },
+            "root"
+        ));
+        assert!(!expensive_query(
+            &Query {
+                scope_node_id: Some("subtree".into()),
+                ..Query::default()
+            },
+            "root"
+        ));
+        assert!(expensive_query(
+            &Query {
+                min_bytes: Some(0),
+                ..Query::default()
+            },
+            "root"
+        ));
+    }
+
+    struct ForbiddenFilesystem(Arc<AtomicUsize>);
+    impl Platform for ForbiddenFilesystem {
+        fn metadata(&self, _: &std::path::Path) -> std::io::Result<FileInfo> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(std::io::Error::other("No filesystem work expected"))
+        }
+        fn volumes(&self) -> std::io::Result<Vec<Volume>> {
+            Ok(vec![])
+        }
+        fn trash(&self, _: &std::path::Path) -> std::io::Result<()> {
+            unreachable!()
+        }
+        fn reveal(&self, _: &std::path::Path) -> std::io::Result<()> {
+            unreachable!()
+        }
+        fn protected_paths(&self) -> Vec<PathBuf> {
+            vec![]
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancellation_before_global_io_admission_saves_no_phantom_root() {
+        let state = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let engine = Engine::open(
+            state.path().join("state"),
+            Arc::new(ForbiddenFilesystem(calls.clone())),
+        )
+        .unwrap();
+        let held = engine
+            .filesystem_budget
+            .clone()
+            .acquire_many_owned(8)
+            .await
+            .unwrap();
+        let started = engine.handle("start_scan", json!({"root_path":state.path().join("not-read"),"request_key":"cancel-before-admission","workers":2})).await.unwrap();
+        engine
+            .handle("cancel_job", json!({"job_id":started["job_id"]}))
+            .await
+            .unwrap();
+        let job = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let job = engine
+                    .handle("get_job", json!({"job_id":started["job_id"]}))
+                    .await
+                    .unwrap();
+                if !active_state(job["state"].as_str().unwrap()) {
+                    break job;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(job["state"], "cancelled");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while engine.has_active_jobs() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let scan = engine
+            .handle("get_scan", json!({"scan_id":started["scan_id"]}))
+            .await
+            .unwrap();
+        assert!(scan["root_id"].is_null());
+        assert!(scan["space_accounting"].is_null());
+        assert_eq!(job["result"]["scan_workers"], 2);
+        assert_eq!(engine.filesystem_budget.available_permits(), 0);
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn scan_worker_arguments_are_validated_before_any_filesystem_work() {
+        let state = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let engine = Engine::open(
+            state.path().join("state"),
+            Arc::new(ForbiddenFilesystem(calls.clone())),
+        )
+        .unwrap();
+        for workers in [json!(0), json!(9), json!(1.5), json!("4")] {
+            let error = engine.handle("start_scan", json!({"root_path":state.path().join("not-read"),"request_key":new_id(),"workers":workers})).await.unwrap_err();
+            assert_eq!(error.code, "invalid_arguments");
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(!engine.has_active_jobs());
     }
 }

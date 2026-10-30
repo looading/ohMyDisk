@@ -29,7 +29,7 @@ impl ServerHandler for Adapter {
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         if self.get_tool(&request.name).is_none() {
-            return Err(ErrorData::invalid_params("Unknown ohMyDisk tool", None));
+            return Err(ErrorData::invalid_params("Unknown OhMyDisk tool", None));
         }
         let args = Value::Object(request.arguments.unwrap_or_default());
         // The public MCP namespace does not leak into the shared service API.
@@ -37,15 +37,39 @@ impl ServerHandler for Adapter {
         let operation = request
             .name
             .strip_prefix("omd_")
-            .ok_or_else(|| ErrorData::invalid_params("Unknown ohMyDisk tool", None))?;
+            .ok_or_else(|| ErrorData::invalid_params("Unknown OhMyDisk tool", None))?;
+        let requested_metric = args
+            .get("size_metric")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         let result = match self.client.call(operation, args).await {
-            Ok(value) => CallToolResult::structured(value),
+            Ok(value) => checked_tool_result(operation, requested_metric.as_deref(), value),
             Err(error) => CallToolResult::structured_error(
                 json!({"error":{"code":error.code,"message":error.message}}),
             ),
         };
         Ok(result.into())
     }
+}
+
+fn checked_tool_result(
+    operation: &str,
+    requested_metric: Option<&str>,
+    value: Value,
+) -> CallToolResult {
+    if matches!(operation, "list_children" | "query_nodes")
+        && let Some(metric) = requested_metric.filter(|metric| *metric != "logical")
+        && value.get("size_metric").and_then(Value::as_str) != Some(metric)
+    {
+        // Older services deserialize unknown Query fields without rejecting them
+        // and return logical rows without a metric echo. Keep legacy logical
+        // requests compatible, but never certify those rows as another metric.
+        return CallToolResult::structured_error(json!({"error":{
+            "code":"backend_upgrade_required",
+            "message":format!("The running background service did not confirm size_metric '{metric}'. Upgrade or restart the backend with the current OhMyDisk version before retrying this metric.")
+        }}));
+    }
+    CallToolResult::structured(value)
 }
 pub async fn run(client: Client) -> Result<(), Box<dyn std::error::Error>> {
     Adapter { client }
@@ -104,7 +128,7 @@ fn tools() -> Vec<Tool> {
         make(
             "start_scan",
             "Start a background scan of an absolute local root; return scan_id and job_id immediately. Reuse request_key only for identical input. Does not follow directory links or cross filesystems.",
-            json!({"root_path":string,"request_key":string}),
+            json!({"root_path":string,"workers":{"type":"integer","minimum":1,"maximum":8},"request_key":string}),
             vec!["root_path", "request_key"],
             false,
             false,
@@ -139,7 +163,7 @@ fn tools() -> Vec<Tool> {
         ),
         make(
             "get_job",
-            "Poll background job state, progress, result identifiers and errors. Cancellation is cooperative.",
+            "Poll background job state, progress, result identifiers and errors. progress.bytes is the legacy logical total, not occupied disk space; use get_scan.space_accounting for occupancy. Cancellation is cooperative.",
             json!({"job_id":string}),
             vec!["job_id"],
             true,
@@ -157,8 +181,8 @@ fn tools() -> Vec<Tool> {
         ),
         make(
             "list_children",
-            "Read direct children of node_id in a frozen snapshot, ordered by logical size. Sizes of parents and children overlap.",
-            json!({"scan_id":string,"node_id":string}),
+            "Read direct children in a frozen snapshot, ordered by the requested size_metric (legacy default: logical). Attributed measures confirmed file space, not a cleanup yield guarantee. Sizes of parents and children overlap.",
+            json!({"scan_id":string,"node_id":string,"size_metric":{"type":"string","enum":["logical","allocated","attributed"],"default":"logical"}}),
             vec!["scan_id", "node_id"],
             true,
             false,
@@ -166,8 +190,8 @@ fn tools() -> Vec<Tool> {
         ),
         make(
             "query_nodes",
-            "Query real nodes in an immutable snapshot. descendants=false selects direct children of scope_node_id (root by default). Parent and descendant sizes must not be added together.",
-            json!({"scan_id":string,"scope_node_id":string,"descendants":{"type":"boolean"},"name":{"type":"string"},"kind":{"type":"string","enum":["directory","file","symlink","other"]},"min_bytes":{"type":"integer","minimum":0},"max_bytes":{"type":"integer","minimum":0},"modified_before":{"type":"integer","minimum":0}}),
+            "Query real nodes using logical, reported allocated, or attributed file bytes. Unknown/partial measurements are retained without numeric size filters; numeric filters exclude them and return excluded_unmeasured. descendants=false selects direct children (root by default). Parent and descendant sizes overlap.",
+            json!({"scan_id":string,"scope_node_id":string,"size_metric":{"type":"string","enum":["logical","allocated","attributed"],"default":"logical"},"descendants":{"type":"boolean"},"name":{"type":"string"},"kind":{"type":"string","enum":["directory","file","symlink","other"]},"min_bytes":{"type":"integer","minimum":0},"max_bytes":{"type":"integer","minimum":0},"modified_before":{"type":"integer","minimum":0}}),
             vec!["scan_id"],
             true,
             false,
@@ -237,4 +261,104 @@ fn tools() -> Vec<Tool> {
             false,
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn legacy_query_response() -> Value {
+        // v0.1.2 query_index::response plus engine's known_stale annotation:
+        // raw rows have sizes, but the envelope has no size_metric declaration.
+        json!({"scan_id":"old-scan","snapshot_id":"old-snapshot", "items":[{
+            "id":"1","logical_bytes":1_100,"allocated_bytes":3
+        }],"next_cursor":null,"total_matches":1,"includes_ancestor_descendant_overlap":false,"known_stale":false})
+    }
+
+    #[test]
+    fn legacy_logical_rows_cannot_satisfy_explicit_nonlogical_queries() {
+        for operation in ["list_children", "query_nodes"] {
+            for metric in ["allocated", "attributed"] {
+                let result = checked_tool_result(operation, Some(metric), legacy_query_response());
+                let encoded = serde_json::to_value(result).unwrap();
+                assert_eq!(encoded["isError"], true);
+                assert_eq!(
+                    encoded["structuredContent"]["error"]["code"],
+                    "backend_upgrade_required"
+                );
+                assert!(encoded["structuredContent"].get("items").is_none());
+                let text_value: Value =
+                    serde_json::from_str(encoded["content"][0]["text"].as_str().unwrap()).unwrap();
+                assert_eq!(text_value, encoded["structuredContent"]);
+            }
+        }
+    }
+
+    #[test]
+    fn omitted_and_explicit_logical_keep_legacy_query_responses_compatible() {
+        for operation in ["list_children", "query_nodes"] {
+            for metric in [None, Some("logical")] {
+                let legacy = legacy_query_response();
+                let encoded =
+                    serde_json::to_value(checked_tool_result(operation, metric, legacy.clone()))
+                        .unwrap();
+                assert_ne!(encoded.get("isError"), Some(&json!(true)));
+                assert_eq!(encoded["structuredContent"], legacy);
+            }
+        }
+    }
+
+    #[test]
+    fn nonlogical_queries_require_the_exact_metric_echo() {
+        for operation in ["list_children", "query_nodes"] {
+            for metric in ["allocated", "attributed"] {
+                let mut current = legacy_query_response();
+                current["size_metric"] = json!(metric);
+                let encoded = serde_json::to_value(checked_tool_result(
+                    operation,
+                    Some(metric),
+                    current.clone(),
+                ))
+                .unwrap();
+                assert_ne!(encoded.get("isError"), Some(&json!(true)));
+                assert_eq!(encoded["structuredContent"], current);
+                for mismatched in [
+                    Value::Null,
+                    json!(0),
+                    json!("logical"),
+                    json!(if metric == "allocated" {
+                        "attributed"
+                    } else {
+                        "allocated"
+                    }),
+                ] {
+                    current["size_metric"] = mismatched;
+                    let encoded = serde_json::to_value(checked_tool_result(
+                        operation,
+                        Some(metric),
+                        current.clone(),
+                    ))
+                    .unwrap();
+                    assert_eq!(encoded["isError"], true);
+                    assert_eq!(
+                        encoded["structuredContent"]["error"]["code"],
+                        "backend_upgrade_required"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn metric_validation_does_not_change_other_tools() {
+        let value = json!({"logical_bytes":1_100,"complete":true});
+        let encoded = serde_json::to_value(checked_tool_result(
+            "get_scan",
+            Some("attributed"),
+            value.clone(),
+        ))
+        .unwrap();
+        assert_ne!(encoded.get("isError"), Some(&json!(true)));
+        assert_eq!(encoded["structuredContent"], value);
+    }
 }

@@ -38,11 +38,11 @@ fn fingerprint(snapshot: &Snapshot) -> Vec<u8> {
     writer.0.finalize().to_vec()
 }
 fn fixture(count: usize) -> Snapshot {
-    Snapshot{id:"snapshot-fixture".into(),scan_id:"scan-fixture".into(),root_id:"0".into(),
+    Snapshot{space_accounting:None,id:"snapshot-fixture".into(),scan_id:"scan-fixture".into(),root_id:"0".into(),
         root_path:NativePath::new(Path::new("/fixture/library")),created_at:123,complete:true,cancelled:false,
         nodes:(0..count).map(|index|{
             let path=format!("/fixture/library/Application Support/component/group-{:03}/container/cache/small-file-{:09}.data",index%100,index);
-            Node{id:index.to_string(),parent_id:(index!=0).then(||"0".into()),name:format!("small-file-{index:09}.data"),
+            Node{space_usage:None,id:index.to_string(),parent_id:(index!=0).then(||"0".into()),name:format!("small-file-{index:09}.data"),
                 path:NativePath::new(Path::new(&path)),kind:if index==0{NodeKind::Directory}else{NodeKind::File},
                 logical_bytes:128,allocated_bytes:Some(512),modified_ns:Some(1_700_000_000_000_000_000+index as u64),
                 identity:format!("unix:1:{index}"),volume_id:"unix:1".into(),link_count:1,complete:true,is_link_or_reparse:false}

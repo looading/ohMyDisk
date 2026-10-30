@@ -1,4 +1,8 @@
-use crate::*;
+use crate::space::{file_space, reconcile_space};
+use crate::{
+    AppError, AttributionProvider, DirectoryEvent, FileInfo, NativePath, Node, NodeKind, NodeSpace,
+    Platform, ScanIssue, ScanProgress, Snapshot, SpaceObservation, new_id, now_ms,
+};
 use std::{
     collections::HashSet,
     io,
@@ -6,19 +10,95 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+/// The serial scanner remains available as a reference and for synchronous callers.
+///
+/// # Errors
+/// Returns an error for an invalid root or a root that cannot be inspected.
+/// Errors in discovered entries are retained as incomplete snapshot issues.
 pub fn scan(
     root: &Path,
     platform: &dyn Platform,
     cancelled: &AtomicBool,
     progress: &mut dyn FnMut(ScanProgress),
 ) -> Result<Snapshot, AppError> {
+    let (root, volume, before) = prepare_root(root, platform)?;
+    let mut builder = ScanBuilder::new(&root, volume, before);
+    let mut pending = vec![(root.clone(), None)];
+    while let Some((path, parent)) = pending.pop() {
+        if cancelled.load(Ordering::Relaxed) {
+            break;
+        }
+        let old_len = builder.snapshot.nodes.len();
+        let admitted = builder.add(&path, parent, platform.scan_metadata(&path));
+        if builder.snapshot.nodes.len() != old_len
+            && builder.snapshot.nodes.len().is_multiple_of(128)
+        {
+            progress(builder.counts.clone());
+        }
+        let Some(index) = admitted else {
+            continue;
+        };
+        let result = platform.read_directory(&path, &mut |event| {
+            if cancelled.load(Ordering::Relaxed) {
+                return false;
+            }
+            match event {
+                DirectoryEvent::Entry(entry) => {
+                    // Only ordinary-file metadata is reused. Directories are checked
+                    // again immediately before traversal, including native bulk entries.
+                    let old_len = builder.snapshot.nodes.len();
+                    match entry.info {
+                        Some(Ok(info)) if info.kind != NodeKind::Directory => {
+                            builder.add(&entry.path, Some(index), Ok(info));
+                        }
+                        Some(Err(error)) => {
+                            builder.add(&entry.path, Some(index), Err(error));
+                        }
+                        _ => pending.push((entry.path, Some(index))),
+                    }
+                    if builder.snapshot.nodes.len() != old_len
+                        && builder.snapshot.nodes.len().is_multiple_of(128)
+                    {
+                        progress(builder.counts.clone());
+                    }
+                }
+                DirectoryEvent::Error(error) => builder.directory_error(index, &error),
+            }
+            !cancelled.load(Ordering::Relaxed)
+        });
+        if let Err(error) = result {
+            builder.directory_error(index, &error);
+        }
+    }
+    let after = matching_observation(platform, &root, &builder.volume);
+    let (snapshot, counts) = builder.finish(cancelled, after);
+    progress(counts);
+    Ok(snapshot)
+}
+
+pub(super) fn matching_observation(
+    platform: &dyn Platform,
+    root: &Path,
+    volume: &str,
+) -> Option<SpaceObservation> {
+    platform
+        .space_observation(root)
+        .ok()
+        .flatten()
+        .filter(|observation| observation.volume_id == volume)
+}
+
+pub(super) fn prepare_root(
+    root: &Path,
+    platform: &dyn Platform,
+) -> Result<(PathBuf, String, Option<SpaceObservation>), AppError> {
     if !root.is_absolute() {
         return Err(AppError::new(
             "path_not_allowed",
             "Scan root must be absolute",
         ));
     }
-    let original = platform.metadata(root)?;
+    let original = platform.scan_metadata(root)?;
     if original.kind != NodeKind::Directory || original.is_link_or_reparse {
         return Err(AppError::new(
             "path_not_allowed",
@@ -26,110 +106,70 @@ pub fn scan(
         ));
     }
     let root = std::fs::canonicalize(root)?;
-    let snapshot = Snapshot {
-        id: new_id(),
-        scan_id: new_id(),
-        root_id: "0".into(),
-        root_path: NativePath::new(&root),
-        created_at: now_ms(),
-        complete: true,
-        cancelled: false,
-        nodes: Vec::new(),
-        issues: Vec::new(),
-    };
-    let mut builder = ScanBuilder {
-        snapshot,
-        platform,
-        cancelled,
-        progress,
-        volume: original.volume_id,
-        visited_directories: HashSet::new(),
-        parents: Vec::new(),
-        pending: vec![Pending::Metadata(root, None)],
-        counts: ScanProgress {
-            phase: "scanning".into(),
-            ..Default::default()
-        },
-    };
-    while let Some(task) = builder.pending.pop() {
-        if builder.stop_requested() {
-            break;
-        }
-        let (path, parent) = match task {
-            Pending::Metadata(path, parent) => {
-                builder.add(path, parent, None);
-                continue;
-            }
-            Pending::Directory(path, parent) => (path, parent),
-        };
-        let result = platform.read_directory(&path, &mut |event| {
-            if builder.stop_requested() {
-                return false;
-            }
-            match event {
-                DirectoryEvent::Entry(entry) => {
-                    // Directory metadata must be obtained when it is about to
-                    // be traversed, not while it waits behind sibling entries.
-                    if entry.info.as_ref().is_none_or(|info| {
-                        info.as_ref().is_ok_and(|i| i.kind == NodeKind::Directory)
-                    }) {
-                        builder
-                            .pending
-                            .push(Pending::Metadata(entry.path, Some(parent)));
-                    } else {
-                        builder.add(entry.path, Some(parent), entry.info);
-                    }
-                }
-                DirectoryEvent::Error(error) => builder.directory_error(parent, error),
-            }
-            !builder.stop_requested()
-        });
-        if let Err(error) = result {
-            builder.directory_error(parent, error);
-        }
-    }
-    Ok(builder.finish())
+    let before = matching_observation(platform, &root, &original.volume_id);
+    Ok((root, original.volume_id, before))
 }
 
-enum Pending {
-    Metadata(PathBuf, Option<usize>),
-    Directory(PathBuf, usize),
-}
-
-struct ScanBuilder<'a, 'p> {
-    snapshot: Snapshot,
-    platform: &'a dyn Platform,
-    cancelled: &'a AtomicBool,
-    progress: &'p mut dyn FnMut(ScanProgress),
-    volume: String,
-    // Traversed directories all belong to `volume`, so identity keys need no
-    // second copy of that same volume ID. Empty identities cannot prove aliasing.
+/// One owner applies all discovery events. Nodes are appended after their parents,
+/// even when independent directory workers finish in a different order.
+pub(super) struct ScanBuilder {
+    pub(super) snapshot: Snapshot,
+    pub(super) volume: String,
+    pub(super) counts: ScanProgress,
+    before: Option<SpaceObservation>,
+    provider: AttributionProvider,
     visited_directories: HashSet<String>,
-    // Parent indices precede their children; usize::MAX is the root sentinel.
     parents: Vec<usize>,
-    // Native regular-file metadata is consumed immediately. Unresolved paths
-    // retain only their PathBuf/parent until a just-in-time metadata check.
-    pending: Vec<Pending>,
-    counts: ScanProgress,
 }
 
-impl ScanBuilder<'_, '_> {
-    fn stop_requested(&mut self) -> bool {
-        if self.cancelled.load(Ordering::Relaxed) {
-            self.snapshot.cancelled = true;
-            self.snapshot.complete = false;
-            true
-        } else {
-            false
+impl ScanBuilder {
+    pub(super) fn new(root: &Path, volume: String, before: Option<SpaceObservation>) -> Self {
+        let provider = before
+            .as_ref()
+            .map_or(AttributionProvider::Unsupported, |observation| {
+                observation.provider
+            });
+        Self {
+            snapshot: Snapshot {
+                space_accounting: None,
+                id: new_id(),
+                scan_id: new_id(),
+                root_id: "0".into(),
+                root_path: NativePath::new(root),
+                created_at: now_ms(),
+                complete: true,
+                cancelled: false,
+                nodes: Vec::new(),
+                issues: Vec::new(),
+            },
+            volume,
+            before,
+            provider,
+            visited_directories: HashSet::new(),
+            parents: Vec::new(),
+            counts: ScanProgress {
+                phase: "scanning".into(),
+                ..Default::default()
+            },
         }
     }
 
-    fn add(&mut self, path: PathBuf, parent: Option<usize>, info: Option<io::Result<FileInfo>>) {
-        let info = match info.unwrap_or_else(|| self.platform.metadata(&path)) {
+    /// Admit a fresh metadata result. Only an admitted directory may be read.
+    pub(super) fn add(
+        &mut self,
+        path: &Path,
+        parent: Option<usize>,
+        info: io::Result<FileInfo>,
+    ) -> Option<usize> {
+        let info = match info {
             Ok(info) => info,
             Err(error) => {
                 if let Some(parent) = parent {
-                    self.snapshot.nodes[parent].complete = false;
+                    let node = &mut self.snapshot.nodes[parent];
+                    node.complete = false;
+                    if let Some(space) = &mut node.space_usage {
+                        space.unmeasured_entries = space.unmeasured_entries.saturating_add(1);
+                    }
                 }
                 self.snapshot.issues.push(ScanIssue {
                     node_id: parent.map(|p| self.snapshot.nodes[p].id.clone()),
@@ -142,7 +182,7 @@ impl ScanBuilder<'_, '_> {
                     .into(),
                     message: error.to_string(),
                 });
-                return;
+                return None;
             }
         };
         let index = self.snapshot.nodes.len();
@@ -155,8 +195,19 @@ impl ScanBuilder<'_, '_> {
             && !self.visited_directories.insert(info.identity.clone());
         let directory = info.kind == NodeKind::Directory && !boundary && !duplicate_directory;
         let excluded_directory_bytes = directory || duplicate_directory;
+        let space_usage = if directory {
+            NodeSpace::default()
+        } else if boundary || duplicate_directory {
+            NodeSpace {
+                unmeasured_entries: 1,
+                ..Default::default()
+            }
+        } else {
+            file_space(&info, self.provider)
+        };
         self.parents.push(parent.unwrap_or(usize::MAX));
         self.snapshot.nodes.push(Node {
+            space_usage: Some(space_usage),
             id: index.to_string(),
             parent_id: parent.map(|p| self.snapshot.nodes[p].id.clone()),
             name: path
@@ -164,7 +215,7 @@ impl ScanBuilder<'_, '_> {
                 .unwrap_or(path.as_os_str())
                 .to_string_lossy()
                 .into_owned(),
-            path: NativePath::new(&path),
+            path: NativePath::new(path),
             kind: info.kind,
             logical_bytes: if excluded_directory_bytes {
                 0
@@ -185,14 +236,11 @@ impl ScanBuilder<'_, '_> {
         });
         if boundary || duplicate_directory {
             self.snapshot.issues.push(ScanIssue {
-                node_id: Some(index.to_string()),
-                path: self.snapshot.nodes[index].path.display.clone(),
+                node_id: Some(index.to_string()), path: self.snapshot.nodes[index].path.display.clone(),
                 code: "boundary_skipped".into(),
                 message: if duplicate_directory {
                     "The same directory identity was already visited; this alias subtree was not traversed or counted"
-                } else {
-                    "Link, reparse point, special file or different filesystem was not traversed"
-                }.into(),
+                } else { "Link, reparse point, special file or different filesystem was not traversed" }.into(),
             });
         }
         if directory {
@@ -201,20 +249,18 @@ impl ScanBuilder<'_, '_> {
             self.counts.files += 1;
             self.counts.bytes = self.counts.bytes.saturating_add(info.logical_bytes);
         }
-        if self.snapshot.nodes.len().is_multiple_of(128) {
-            self.counts
-                .current_path
-                .clone_from(&self.snapshot.nodes[index].path.display);
-            (self.progress)(self.counts.clone());
-        }
-        if directory {
-            self.pending.push(Pending::Directory(path, index));
-        }
+        self.counts
+            .current_path
+            .clone_from(&self.snapshot.nodes[index].path.display);
+        directory.then_some(index)
     }
 
-    fn directory_error(&mut self, parent: usize, error: io::Error) {
+    pub(super) fn directory_error(&mut self, parent: usize, error: &io::Error) {
         let node = &mut self.snapshot.nodes[parent];
         node.complete = false;
+        if let Some(space) = &mut node.space_usage {
+            space.unmeasured_entries = space.unmeasured_entries.saturating_add(1);
+        }
         self.snapshot.issues.push(ScanIssue {
             node_id: Some(node.id.clone()),
             path: node.path.display.clone(),
@@ -223,20 +269,29 @@ impl ScanBuilder<'_, '_> {
         });
     }
 
-    fn finish(mut self) -> Snapshot {
-        self.stop_requested();
+    pub(super) fn finish(
+        mut self,
+        cancelled: &AtomicBool,
+        after: Option<SpaceObservation>,
+    ) -> (Snapshot, ScanProgress) {
+        self.snapshot.cancelled = cancelled.load(Ordering::Relaxed);
+        self.snapshot.complete &= !self.snapshot.cancelled;
+        if self.snapshot.cancelled {
+            mark_cancelled_directories(&mut self.snapshot.nodes);
+        }
         for index in (0..self.snapshot.nodes.len()).rev() {
             let parent = self.parents[index];
             if parent == usize::MAX {
                 continue;
             }
             let child = &self.snapshot.nodes[index];
-            let (logical, allocated, kind, links, complete) = (
+            let (logical, allocated, kind, links, complete, space) = (
                 child.logical_bytes,
                 child.allocated_bytes,
                 child.kind,
                 child.link_count,
                 child.complete,
+                child.space_usage.clone().unwrap_or_default(),
             );
             let parent = &mut self.snapshot.nodes[parent];
             parent.logical_bytes = parent.logical_bytes.saturating_add(logical);
@@ -249,24 +304,60 @@ impl ScanBuilder<'_, '_> {
                     .and_then(|(a, b)| a.checked_add(b))
             };
             parent.complete &= complete;
-        }
-        self.stop_requested();
-        if self.snapshot.cancelled {
-            for node in &mut self.snapshot.nodes {
-                if node.kind == NodeKind::Directory {
-                    node.complete = false;
-                }
+            if let Some(usage) = &mut parent.space_usage {
+                usage.attributed_bytes = usage
+                    .attributed_bytes
+                    .saturating_add(space.attributed_bytes);
+                usage.measured_entries = usage
+                    .measured_entries
+                    .saturating_add(space.measured_entries);
+                usage.unmeasured_entries = usage
+                    .unmeasured_entries
+                    .saturating_add(space.unmeasured_entries);
             }
+        }
+        self.snapshot.cancelled |= cancelled.load(Ordering::Relaxed);
+        self.snapshot.complete &= !self.snapshot.cancelled;
+        if self.snapshot.cancelled {
+            // A cancellation can arrive during aggregation. In that case every
+            // directory, including ancestors already reduced, still carries at
+            // least one unknown-subtree marker instead of a measured zero.
+            mark_cancelled_directories(&mut self.snapshot.nodes);
         }
         self.snapshot.complete &= self.snapshot.nodes.first().is_some_and(|n| n.complete)
             && self.snapshot.issues.is_empty();
+        if let Some(before) = self.before {
+            let usage = self
+                .snapshot
+                .nodes
+                .first()
+                .and_then(|node| node.space_usage.as_ref())
+                .cloned()
+                .unwrap_or_default();
+            self.snapshot.space_accounting = Some(reconcile_space(
+                before,
+                after,
+                &usage,
+                self.snapshot.complete,
+            ));
+        }
         self.counts.phase = if self.snapshot.cancelled {
             "cancelled"
         } else {
             "completed"
         }
         .into();
-        (self.progress)(self.counts);
-        self.snapshot
+        (self.snapshot, self.counts)
+    }
+}
+
+fn mark_cancelled_directories(nodes: &mut [Node]) {
+    for node in nodes {
+        if node.kind == NodeKind::Directory {
+            node.complete = false;
+            if let Some(space) = &mut node.space_usage {
+                space.unmeasured_entries = space.unmeasured_entries.max(1);
+            }
+        }
     }
 }

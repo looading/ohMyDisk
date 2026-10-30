@@ -584,6 +584,8 @@ mod tests {
             kind: "cleanup".into(),
             state: "running".into(),
             created_at: 123,
+            elapsed_ms: None,
+            finished_at: None,
             progress: ohmydisk_core::ScanProgress::default(),
             result: serde_json::json!({"items_ready":true}),
             error: None,

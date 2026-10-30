@@ -8,6 +8,7 @@ pub fn query(snapshot: &Snapshot, query: &Query) -> Result<serde_json::Value, Ap
     if !snapshot.nodes.iter().any(|n| n.id == scope) {
         return Err(AppError::new("not_found", "Scope node not found"));
     }
+    space::require_measurement(&snapshot.nodes, query.size_metric)?;
     let by_id = snapshot
         .nodes
         .iter()
@@ -39,6 +40,7 @@ pub fn query(snapshot: &Snapshot, query: &Query) -> Result<serde_json::Value, Ap
             offset
         }
     };
+    let mut excluded_unmeasured = 0usize;
     let mut nodes = snapshot
         .nodes
         .iter()
@@ -63,16 +65,26 @@ pub fn query(snapshot: &Snapshot, query: &Query) -> Result<serde_json::Value, Ap
                     .name
                     .as_ref()
                     .is_none_or(|q| n.name.to_lowercase().contains(&q.to_lowercase()))
-                && query.min_bytes.is_none_or(|x| n.logical_bytes >= x)
-                && query.max_bytes.is_none_or(|x| n.logical_bytes <= x)
                 && query
                     .modified_before
                     .is_none_or(|x| n.modified_ns.is_some_and(|m| m / 1_000_000 <= x))
+                && {
+                    let numeric = query.min_bytes.is_some() || query.max_bytes.is_some();
+                    if numeric && !space::metric_is_complete(n, query.size_metric) {
+                        excluded_unmeasured += 1;
+                        false
+                    } else {
+                        space::metric_value(n, query.size_metric).is_none_or(|value| {
+                            query.min_bytes.is_none_or(|min| value >= min)
+                                && query.max_bytes.is_none_or(|max| value <= max)
+                        })
+                    }
+                }
         })
         .collect::<Vec<_>>();
     nodes.sort_by(|a, b| {
-        b.logical_bytes
-            .cmp(&a.logical_bytes)
+        space::metric_value(b, query.size_metric)
+            .cmp(&space::metric_value(a, query.size_metric))
             .then_with(|| a.id.cmp(&b.id))
     });
     if offset > nodes.len() {
@@ -90,7 +102,7 @@ pub fn query(snapshot: &Snapshot, query: &Query) -> Result<serde_json::Value, Ap
     } else {
         None
     };
-    Ok(
-        serde_json::json!({"scan_id":snapshot.scan_id,"snapshot_id":snapshot.id,"items":nodes[offset..end],"next_cursor":next,"total_matches":nodes.len(),"includes_ancestor_descendant_overlap":query.descendants}),
-    )
+    let mut value = serde_json::json!({"scan_id":snapshot.scan_id,"snapshot_id":snapshot.id,"items":nodes[offset..end],"next_cursor":next,"total_matches":nodes.len(),"includes_ancestor_descendant_overlap":query.descendants,"size_metric":query.size_metric,"excluded_unmeasured":excluded_unmeasured});
+    space::annotate_query(&mut value, snapshot, query.size_metric);
+    Ok(value)
 }

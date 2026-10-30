@@ -1,0 +1,38 @@
+{
+  "kind": "directory-heavy",
+  "seed": 20261033,
+  "parameters": {
+    "directories_with_files": 5000,
+    "empty_directories": 5000,
+    "files_per_directory": 2,
+    "regular_files": 10000,
+    "file_bytes": 128
+  },
+  "features": {
+    "symlinks": 0,
+    "hardlinks": 0,
+    "symlinks_unavailable": false,
+    "hardlinks_unavailable": false
+  },
+  "create_ms": 2995.8937499905005,
+  "expected": {
+    "nodes": 20001,
+    "files": 10000,
+    "directories": 10001,
+    "boundaries": 0,
+    "hidden_entries": 0,
+    "hardlinked_file_entries": 0,
+    "metadata_errors": 0,
+    "read_directory_errors": 0,
+    "kinds": {
+      "directory": 10001,
+      "file": 10000,
+      "symlink": 0,
+      "other": 0
+    },
+    "logical_bytes": 1280000,
+    "expected_complete": true,
+    "inventory_digest": "6ce3bb562d246eb1ba4603ac68fb038f6042661f43dd6326909bd6ecf371c140"
+  },
+  "inventory_ms": 1436.8187080835924
+}

@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+build = "build.rs"
 
 [dependencies]
 ohmydisk-core.workspace = true
@@ -17,6 +18,16 @@ rmcp = { version = "=3.8.0", default-features = false, features = ["server", "tr
 iced = { version = "0.14", default-features = false, features = ["tiny-skia", "canvas", "tokio", "advanced"] }
 rfd = "0.17"
 dirs = "6"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.5"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSView", "NSResponder", "NSWindow", "NSEvent", "NSButton", "NSControl"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSGeometry", "NSObject", "NSArray"] }
+raw-window-handle = "=0.6.2"
+
+[build-dependencies]
+# Build scripts run on the host, including when targeting Windows from another OS.
+winresource = "0.1.34"
 
 [lints]
 workspace = true

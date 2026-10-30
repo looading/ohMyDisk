@@ -47,6 +47,7 @@ class Adapter:
             initialized = self.request("initialize", {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "omd-fixture-smoke", "version": "0.1.0"}})
             assert initialized["protocolVersion"] == "2025-11-25", initialized
             assert initialized["serverInfo"]["name"] == "omd", initialized
+            self.server_version = initialized["serverInfo"]["version"]
             self.notify("notifications/initialized")
         except BaseException:
             self.stop()
@@ -218,6 +219,60 @@ class FixtureService:
         return False
 
 
+def attributed_value(node):
+    usage = node.get("space_usage")
+    assert isinstance(usage, dict), node
+    for key in ("attributed_bytes", "measured_entries", "unmeasured_entries"):
+        assert isinstance(usage[key], int) and not isinstance(usage[key], bool) and usage[key] >= 0, usage
+    if usage["measured_entries"] == 0 and usage["unmeasured_entries"] > 0:
+        return None
+    return usage["attributed_bytes"]
+
+
+def assert_attributed_page(page):
+    assert page["size_metric"] == "attributed", page
+    def order(node):
+        value = attributed_value(node)
+        return value is None, -value if value is not None else 0, node["id"]
+    assert page["items"] == sorted(page["items"], key=order), page
+
+
+def assert_space_accounting(summary, file_nodes):
+    accounting = summary.get("space_accounting")
+    if accounting is None:
+        # Native sampling may fail or be unsupported. Raw metadata remains
+        # browsable, but an absent observation is not a measured zero ledger.
+        assert all(attributed_value(node) is None for node in file_nodes), file_nodes
+        return {"provider": "unsupported", "measurement_status": "unavailable", "reconciliation_status": "unavailable", "ledger_verified": False}
+    assert accounting["measurement_status"] in {"complete", "partial", "unavailable"}, accounting
+    assert accounting["reconciliation_status"] in {"balanced", "inconsistent", "unavailable"}, accounting
+    provider = accounting["before"]["provider"]
+    assert provider in {"mac_private_size", "ntfs_unshared_allocation", "unsupported"}, accounting
+    measured = [node for node in file_nodes if attributed_value(node) is not None]
+    unmeasured = [node for node in file_nodes if attributed_value(node) is None]
+    assert accounting["attributed_bytes"] == sum(attributed_value(node) for node in measured), accounting
+    if provider == "unsupported":
+        assert not measured and unmeasured, accounting
+        assert accounting["measurement_status"] == "unavailable", accounting
+    if unmeasured:
+        assert accounting["measurement_status"] != "complete", accounting
+    after = accounting.get("after")
+    if after is not None and after["capacity_scope"] == "caller_view":
+        assert accounting["reconciliation_status"] != "balanced", accounting
+    verified = accounting["reconciliation_status"] == "balanced"
+    if verified:
+        assert after is not None and after["capacity_scope"] != "caller_view", accounting
+        assert after["volume_id"] == accounting["before"]["volume_id"], accounting
+        assert after["total_bytes"] == accounting["before"]["total_bytes"], accounting
+        capacity, available = after["total_bytes"], after["available_bytes"]
+        attributed, remainder = accounting["attributed_bytes"], accounting["shared_unattributed_bytes"]
+        assert all(isinstance(value, int) and value >= 0 for value in (capacity, available, attributed, remainder)), accounting
+        assert capacity == available + attributed + remainder, accounting
+    else:
+        assert accounting["shared_unattributed_bytes"] is None, accounting
+    return {"provider": provider, "measurement_status": accounting["measurement_status"], "reconciliation_status": accounting["reconciliation_status"], "ledger_verified": verified}
+
+
 def run(binary, test_trash, service_mode="auto"):
     started = time.monotonic()
     with temporary_fixture() as fixture:
@@ -230,6 +285,12 @@ def run(binary, test_trash, service_mode="auto"):
         nested = root / "nested"
         nested.mkdir()
         (nested / "child.txt").write_bytes(b"nested")
+        try:
+            os.link(nested / "child.txt", nested / "child-hardlink.txt")
+            hardlink_created = True
+        except OSError:
+            # Some temporary filesystems do not implement hard links.
+            hardlink_created = False
         state = fixture / "state"
         with FixtureService(binary, state, service_mode) as session:
             adapter = session.adapter()
@@ -240,7 +301,14 @@ def run(binary, test_trash, service_mode="auto"):
             for name in ("omd_execute_trash", "omd_execute_permanent"):
                 assert definitions[name]["annotations"]["destructiveHint"] is True
                 assert definitions[name]["annotations"]["readOnlyHint"] is False
-            assert adapter.call("get_capabilities")["authorization_model"] == "host_confirmed"
+            capabilities = adapter.call("get_capabilities")
+            assert capabilities["authorization_model"] == "host_confirmed"
+            assert capabilities["application_version"] == adapter.server_version
+            assert set(capabilities["size_metrics"]) == {"logical", "allocated", "attributed"}, capabilities
+            assert capabilities["default_display_metric"] == "attributed", capabilities
+            assert capabilities["legacy_query_default"] == "logical", capabilities
+            for name in ("omd_list_children", "omd_query_nodes"):
+                assert set(definitions[name]["inputSchema"]["properties"]["size_metric"]["enum"]) == {"logical", "allocated", "attributed"}
             assert isinstance(adapter.call("list_sources")["items"], list)
             scan_input = {"root_path": str(root), "request_key": "smoke-scan"}
             accepted = adapter.call("start_scan", scan_input)
@@ -254,12 +322,33 @@ def run(binary, test_trash, service_mode="auto"):
             scan_id = accepted["scan_id"]
             summary = adapter.call("get_scan", {"scan_id": scan_id})
             assert summary["complete"] is True and "nodes" not in summary, summary
+            assert summary["default_display_metric"] == "attributed", summary
             first = adapter.call("list_children", {"scan_id": scan_id, "node_id": summary["root_id"], "limit": 2})
             assert len(first["items"]) == 2 and first["next_cursor"], first
+            assert first["size_metric"] == "logical", first
             second = adapter.call("list_children", {"scan_id": scan_id, "node_id": summary["root_id"], "limit": 2, "cursor": first["next_cursor"]})
             assert len({n["id"] for n in first["items"] + second["items"]}) == 4
             nodes = adapter.call("query_nodes", {"scan_id": scan_id, "descendants": True, "kind": "file"})["items"]
-            assert {n["name"] for n in nodes} == {"keep.txt", ".hidden", "permanent target.txt", "child.txt"}, nodes
+            expected_names = {"keep.txt", ".hidden", "permanent target.txt", "child.txt"}
+            if hardlink_created:
+                expected_names.add("child-hardlink.txt")
+            assert {n["name"] for n in nodes} == expected_names, nodes
+            attributed_children = adapter.call("list_children", {"scan_id": scan_id, "node_id": summary["root_id"], "size_metric": "attributed"})
+            assert_attributed_page(attributed_children)
+            attributed_files = adapter.call("query_nodes", {"scan_id": scan_id, "descendants": True, "kind": "file", "size_metric": "attributed"})
+            assert_attributed_page(attributed_files)
+            assert {node["id"] for node in attributed_files["items"]} == {node["id"] for node in nodes}
+            assert not attributed_files["next_cursor"], attributed_files
+            if hardlink_created:
+                shared = [node for node in attributed_files["items"] if node["name"] in {"child.txt", "child-hardlink.txt"}]
+                assert len(shared) == 2 and all(attributed_value(node) is None for node in shared), shared
+                assert all(node["space_usage"]["unmeasured_entries"] > 0 for node in shared), shared
+            numeric = adapter.call("query_nodes", {"scan_id": scan_id, "descendants": True, "kind": "file", "size_metric": "attributed", "min_bytes": 0})
+            assert_attributed_page(numeric)
+            assert numeric["excluded_unmeasured"] == sum(attributed_value(node) is None for node in attributed_files["items"]), numeric
+            assert all(attributed_value(node) is not None for node in numeric["items"]), numeric
+            accounting_status = assert_space_accounting(summary, attributed_files["items"])
+            adapter.call("list_children", {"scan_id": scan_id, "node_id": summary["root_id"], "limit": 2, "size_metric": "attributed", "cursor": first["next_cursor"]}, error="invalid_cursor")
             target = next(n for n in nodes if n["name"] == "permanent target.txt")
             preparation = {"scan_id": scan_id, "node_ids": [target["id"]], "mode": "permanent", "request_key": "smoke-plan"}
             preparing = adapter.call("create_cleanup_plan", preparation)
@@ -277,6 +366,7 @@ def run(binary, test_trash, service_mode="auto"):
             adapter.close()
             adapter = session.adapter()
             assert adapter.call("execute_permanent", dict(execution_input, request_key="smoke-reconnect")) == cleaning
+            assert adapter.call("get_scan", {"scan_id": scan_id}).get("space_accounting") == summary.get("space_accounting")
             adapter.wait(cleaning)
             result = adapter.call("get_cleanup_result", {"job_id": cleaning["job_id"]})
             assert any(item["status"] == "succeeded" for item in result["items"]), result
@@ -305,7 +395,7 @@ def run(binary, test_trash, service_mode="auto"):
             assert adapter.call("release_scan", {"scan_id": scan_id})["released"] is True
             adapter.call("get_scan", {"scan_id": scan_id}, error="not_found")
             adapter.close()
-    print(json.dumps({"passed": True, "service_mode": service_mode, "tools": len(tools), "protocol": "2025-11-25", "permanent_delete": True, "trash_delete": test_trash, "mode_isolation": True, "reconnect_idempotency": True, "refresh_snapshot": True, "elapsed_seconds": round(time.monotonic() - started, 3)}, ensure_ascii=False))
+    print(json.dumps({"passed": True, "service_mode": service_mode, "tools": len(tools), "protocol": "2025-11-25", "application_version": capabilities["application_version"], "attributed_queries": True, "hardlink_unknown_checked": hardlink_created, "space_accounting": accounting_status, "permanent_delete": True, "trash_delete": test_trash, "mode_isolation": True, "reconnect_idempotency": True, "refresh_snapshot": True, "elapsed_seconds": round(time.monotonic() - started, 3)}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

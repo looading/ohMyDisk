@@ -2,6 +2,9 @@
 
 `scan_bench.py` uses a separate diagnostic runner that calls the core scanner and
 `NativePlatform` directly. It excludes IPC, service persistence and GUI work.
+The current runner uses Tokio and four directory workers by default, with a
+shared filesystem budget of four. The runtime uses two executor threads;
+blocking directory workers are independently limited by the requested scan budget.
 Python 3.11 or newer is sufficient; no Python packages are required.
 
 Build the runner in release mode, then run:
@@ -21,6 +24,23 @@ The default suite creates and removes its own temporary data:
 | `wide-directory` | 50,000 files of 32 bytes in one directory | Large directory enumeration and ordering |
 | `deep-tree` | 128 nested directories, one file per level | Depth and parent aggregation |
 | `mixed` | 10,000 varying-size files, hidden and empty directories, link target and optional hardlink/symlinks | Boundary handling and logical-size integrity |
+
+`directory-heavy` is an optional fifth fixture. It creates 5,000 short sibling
+directories containing one 128-byte file each, plus 5,000 empty sibling
+directories. Paths have the shape `root/d000000/f000000`. Select it explicitly;
+`--fixture all` and the default suite continue to select the original four
+fixtures, preserving the existing four-fixture comparison gate. It can also be
+added with `--fixture all --fixture directory-heavy`.
+
+```sh
+python3 benchmarks/scan_bench.py --binary target/release/examples/scan-bench \
+  --fixture directory-heavy --directory-count 1000 --directory-files-per-dir 2 \
+  --empty-directories 1000 --workers 4 --output docs/directory-heavy-scan.json
+```
+
+Set `--directory-files-per-dir 0` to measure only directory enumeration/admission.
+All three directory-heavy counts may be zero. Fixture creation remains outside
+scan timings; the report records the resulting populated/empty directory counts.
 
 Fixture sizes, random seed and fixture selection can be changed explicitly:
 
@@ -94,6 +114,42 @@ are accepted. Each binary's metadata and the report's method record the selected
 mode; `default` means the runner's default implementation, which depends on its
 version and platform.
 
+Scan execution is also configured independently for each binary. Candidate
+`--workers {1,2,4,8}` selects bounded asynchronous traversal, while `--serial`
+selects the synchronous reference scanner in the same current executable.
+Reference selection uses `--reference-workers {1,2,4,8}` or `--reference-serial`.
+The two options for each role are mutually exclusive. Native occupancy sampling
+and per-file private-size measurement remain enabled in both serial and async
+modes, including when portable enumeration is selected.
+
+Omitting these options adds no execution argument to that runner. This keeps
+frozen older runners compatible: do not select workers or serial explicitly for
+an old executable. The current executable defaults to async/four workers; an old
+executable retains its historical default. Binary and method metadata record
+`runner_default`, `async` or `serial`, the declared workers and the exact fixed
+execution arguments. Current runner results also report their actual `scan_mode`
+and `scan_workers`; those fields are null for frozen runners that omit them.
+
+For a worker-count comparison against the current serial implementation:
+
+```sh
+python3 benchmarks/scan_bench.py \
+  --binary target/release/examples/scan-bench \
+  --reference-binary target/release/examples/scan-bench \
+  --workers 4 --reference-serial --fixture directory-heavy \
+  --output docs/scan-workers4-vs-serial.json
+```
+
+Repeat in separate, otherwise idle runs with `--workers 1`, `2`, `4` and `8` to
+measure scheduling overhead and scaling. Both binaries in each comparison see
+the same generated fixture, native observations and correctness checks. A
+comparison with a historical executable additionally includes occupancy-provider
+and snapshot-schema changes; use the same executable's serial mode to isolate
+traversal concurrency. Directory
+parallelism can overlap sibling I/O; a single wide directory or a strict deep
+chain may have little available parallel work. Queue and runtime overhead can
+make some shapes slower, so report each fixture separately.
+
 To isolate native bulk enumeration from the traversal algorithm, compare the same
 new executable with its portable mode:
 
@@ -117,7 +173,11 @@ samples p95 is the largest sample. These are warm-cache measurements: creating
 and inventorying fixtures touches filesystem caches. The script does not clear
 caches and makes no cold-cache claim.
 
-`scan_ms` measures the runner's scan call. `serialize_ms` measures snapshot JSON
+`scan_ms` measures the runner's scan call, including root validation,
+canonicalization, before/after native filesystem observations, worker joining
+and aggregation. Runtime construction, the lightweight progress observer's final
+join, serialization, hashing, index construction and queries are outside this
+timing. `serialize_ms` measures snapshot JSON
 serialization, and `snapshot_bytes` is the serialized size. `process_wall_ms`
 also includes process startup and diagnostic output. `files_per_second` divides
 the snapshot's non-directory count by scan time; it includes symlink/other
@@ -130,6 +190,22 @@ returns, before diagnostic hashing, queries or serialization. It includes proces
 startup and scan allocations; it is not the incremental memory used by the scan.
 The value is reported in bytes when supported, otherwise null. There is no
 Python subprocess sampling estimate mixed into that metric.
+
+`metadata_calls` counts calls through `Platform::metadata` and
+`Platform::scan_metadata`, not native syscalls. A `scan_metadata` call may perform
+more than one native operation to retrieve a private allocation; native bulk
+metadata can describe many files without calling either wrapper method.
+`metadata_ms` sums the measured method durations. `space_observation_calls` and
+`space_observation_ms` separately measure forwarded native capacity observations.
+All these calls are included in `scan_ms`. With multiple workers, summed metadata
+or directory durations can exceed elapsed scan time. `directory_ms` includes the
+streaming visitor, fallback metadata and channel backpressure during enumeration.
+
+The async observer only counts delivered watch changes, joins before the runner
+returns, and does no persistence or per-file task creation. Its
+`progress_callbacks` counts coalesced notifications; serial mode counts direct
+scan callback invocations. Treat those counts as diagnostics for the chosen mode,
+not identical work units across implementations.
 
 Cancellation runs request cancellation after 20 ms by default. They are separate
 from full-scan summaries and report cancellation latency only for scans that
@@ -169,12 +245,19 @@ The script invokes an executable without a shell:
 ```text
 ohmydisk-scan-bench <absolute-root> --output <temporary-json>
 ohmydisk-scan-bench <absolute-root> --output <temporary-json> --cancel-after-ms N
+# Current runners additionally support these mutually exclusive execution flags:
+ohmydisk-scan-bench <absolute-root> --output <temporary-json> --workers 4
+ohmydisk-scan-bench <absolute-root> --output <temporary-json> --serial
 ```
 
 It must return success after writing a JSON object with these fields:
 
 ```json
 {
+  "scan_mode": "async",
+  "scan_workers": 4,
+  "space_observation_calls": 2,
+  "space_observation_ms": 1.0,
   "scan_ms": 100.0,
   "serialize_ms": 20.0,
   "snapshot_bytes": 1000000,
@@ -201,7 +284,10 @@ It must return success after writing a JSON object with these fields:
 Numbers must be finite and nonnegative; counts and byte sizes must be integers.
 `metadata_calls`, `metadata_ms`, `progress_callbacks`, `first_children_ms`,
 `first_descendants_ms`, `directory_calls`, `directory_ms`, `index_build_ms`,
-`peak_rss_bytes` and `cancel_latency_ms` may be null or omitted when unavailable.
+`peak_rss_bytes`, `cancel_latency_ms`, `scan_workers`, `space_observation_calls`
+and `space_observation_ms` may be null or omitted when unavailable.
+`scan_mode`, when present, must be `async` or `serial`; it may be omitted by older
+runners. Scan worker and observation call counts must be integers when provided.
 `progress_callbacks` and `directory_calls` must be integers when provided.
 Directory operation and index build metrics are included in summaries when
 reported, and remain null for older runners that do not provide them.

@@ -113,6 +113,7 @@ pub(crate) mod tests {
 
     pub(crate) fn snapshot() -> Snapshot {
         Snapshot {
+            space_accounting: None,
             id: "snapshot-fixture".into(),
             scan_id: "scan-fixture".into(),
             root_id: "root".into(),
@@ -132,6 +133,7 @@ pub(crate) mod tests {
             .into_iter()
             .enumerate()
             .map(|(index, kind)| Node {
+                space_usage: None,
                 id: if index == 0 {
                     "root".into()
                 } else {

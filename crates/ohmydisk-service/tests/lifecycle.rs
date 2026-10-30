@@ -229,6 +229,8 @@ fn crash_recovery_keeps_unknown_operations_and_requests() {
         kind: "cleanup".into(),
         state: "running".into(),
         created_at: now_ms(),
+        elapsed_ms: None,
+        finished_at: None,
         progress: ScanProgress::default(),
         result: json!({"plan_id":"plan"}),
         error: None,
@@ -386,6 +388,100 @@ async fn cancellation_is_requested_before_a_worker_reaches_its_next_boundary() {
     assert!(root.join("untouched.txt").exists());
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scan_elapsed_advances_without_progress_and_freezes_for_every_terminal_outcome() {
+    for outcome in ["completed", "cancelled", "failed"] {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("files");
+        if outcome != "failed" {
+            std::fs::create_dir(&root).unwrap();
+            std::fs::write(root.join("kept.txt"), b"data").unwrap();
+        }
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let platform = Arc::new(PausedPlatform {
+            entered: std::sync::Mutex::new(Some(entered_tx)),
+            resume: std::sync::Mutex::new(resume_rx),
+        });
+        let state = fixture.path().join("state");
+        let engine = Engine::open(state.clone(), platform).unwrap();
+        let scan = engine
+            .handle(
+                "start_scan",
+                json!({"root_path":root,"request_key":"timed-scan"}),
+            )
+            .await
+            .unwrap();
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let first = engine
+            .handle("get_job", json!({"job_id":scan["job_id"]}))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        let second = engine
+            .handle("get_job", json!({"job_id":scan["job_id"]}))
+            .await
+            .unwrap();
+        assert_eq!(first["progress"], second["progress"]);
+        assert!(second["elapsed_ms"].as_u64().unwrap() > first["elapsed_ms"].as_u64().unwrap());
+        assert!(second.get("finished_at").is_none());
+        if outcome == "cancelled" {
+            let requested = engine
+                .handle("cancel_job", json!({"job_id":scan["job_id"]}))
+                .await
+                .unwrap();
+            assert_eq!(requested["state"], "cancel_requested");
+            assert!(
+                requested["elapsed_ms"].as_u64().unwrap() >= second["elapsed_ms"].as_u64().unwrap()
+            );
+        }
+        resume_tx.send(()).unwrap();
+        let job = wait(&engine, &scan).await;
+        assert_eq!(job.state, outcome);
+        assert!(job.elapsed_ms.unwrap() >= second["elapsed_ms"].as_u64().unwrap());
+        assert!(job.finished_at.unwrap() >= job.created_at);
+        let summary = engine
+            .handle("get_scan", json!({"scan_id":scan["scan_id"]}))
+            .await
+            .unwrap();
+        assert_eq!(summary["started_at"], job.created_at);
+        assert_eq!(summary["elapsed_ms"], job.elapsed_ms.unwrap());
+        assert_eq!(summary["finished_at"], job.finished_at.unwrap());
+        if outcome == "completed" {
+            let children = engine
+                .handle(
+                    "list_children",
+                    json!({"scan_id":scan["scan_id"],"node_id":summary["root_id"]}),
+                )
+                .await
+                .unwrap();
+            assert_eq!(children["items"][0]["name"], "kept.txt");
+        }
+        idle(&engine).await;
+        drop(engine);
+
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        let reopened = Engine::open(state, Arc::new(NativePlatform)).unwrap();
+        let saved = reopened
+            .handle("get_job", json!({"job_id":scan["job_id"]}))
+            .await
+            .unwrap();
+        assert_eq!(saved["elapsed_ms"], job.elapsed_ms.unwrap());
+        assert_eq!(saved["finished_at"], job.finished_at.unwrap());
+        assert_eq!(
+            reopened
+                .handle("get_scan", json!({"scan_id":scan["scan_id"]}))
+                .await
+                .unwrap(),
+            summary
+        );
+        let history = reopened.handle("list_scans", json!({})).await.unwrap();
+        assert_eq!(history["items"][0]["elapsed_ms"], job.elapsed_ms.unwrap());
+    }
+}
+
 async fn idle(engine: &Arc<Engine>) {
     for _ in 0..1000 {
         if !engine.has_active_jobs() {
@@ -401,6 +497,8 @@ fn interrupted_fixture_job(id: &str, scan_id: &str) -> Job {
         kind: "cleanup".into(),
         state: "running".into(),
         created_at: now_ms(),
+        elapsed_ms: None,
+        finished_at: None,
         progress: ScanProgress::default(),
         result: json!({"scan_id":scan_id,"plan_id":"simulated-plan","items_ready":false,"needs_rescan":false}),
         error: None,
@@ -658,10 +756,14 @@ async fn legacy_snapshot_query_is_compatible_without_rewriting_legacy_data() {
     let root = fixture.path().join("files");
     std::fs::create_dir(&root).unwrap();
     std::fs::write(root.join("legacy"), b"legacy data").unwrap();
-    let snapshot =
+    let mut snapshot =
         ohmydisk_core::scan::scan(&root, &NativePlatform, &false.into(), &mut |_| {}).unwrap();
     let state = fixture.path().join("state");
     ohmydisk_platform::prepare_private_dir(&state).unwrap();
+    snapshot.space_accounting = None;
+    for node in &mut snapshot.nodes {
+        node.space_usage = None;
+    }
     let store = Store::open(&state.join("state.sqlite")).unwrap();
     let job_id = new_id();
     store.put("snapshot", &snapshot.id, &snapshot).unwrap();
@@ -675,6 +777,8 @@ async fn legacy_snapshot_query_is_compatible_without_rewriting_legacy_data() {
                 kind: "scan".into(),
                 state: "completed".into(),
                 created_at: 0,
+                elapsed_ms: None,
+                finished_at: None,
                 progress: ScanProgress::default(),
                 result: json!({"scan_id":snapshot.scan_id}),
                 error: None,

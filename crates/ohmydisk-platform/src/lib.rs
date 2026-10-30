@@ -2,7 +2,7 @@
 
 #[cfg(any(unix, test))]
 use ohmydisk_core::NodeKind;
-use ohmydisk_core::{DirectoryEvent, FileInfo, NativePath, Platform, Volume};
+use ohmydisk_core::{DirectoryEvent, FileInfo, NativePath, Platform, SpaceObservation, Volume};
 #[cfg(unix)]
 use std::time::UNIX_EPOCH;
 use std::{
@@ -13,10 +13,14 @@ use std::{
 
 #[cfg(target_os = "macos")]
 mod macos_bulk;
+#[cfg(target_os = "macos")]
+mod macos_space;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
 mod windows_recycle;
+#[cfg(windows)]
+mod windows_space;
 #[cfg(windows)]
 pub use windows::verify_process_user;
 
@@ -57,6 +61,7 @@ impl Platform for NativePlatform {
             let metadata = fs::symlink_metadata(path)?;
             let kind = node_kind(&metadata);
             Ok(FileInfo {
+                private_bytes: None,
                 kind,
                 logical_bytes: metadata.len(),
                 allocated_bytes: metadata.blocks().checked_mul(512),
@@ -66,6 +71,36 @@ impl Platform for NativePlatform {
                 link_count: metadata.nlink(),
                 is_link_or_reparse: metadata.file_type().is_symlink(),
             })
+        }
+    }
+
+    fn scan_metadata(&self, path: &Path) -> io::Result<FileInfo> {
+        let info = self.metadata(path)?;
+        #[cfg(target_os = "macos")]
+        let mut info = info;
+        #[cfg(target_os = "macos")]
+        if info.kind == NodeKind::File && !info.is_link_or_reparse && info.link_count == 1 {
+            // Accounting is optional; a failed extra attribute query must not
+            // discard successfully obtained metadata or an otherwise visible file.
+            info.private_bytes = macos_space::private_bytes(path).ok().flatten();
+        }
+        Ok(info)
+    }
+
+    fn space_observation(&self, path: &Path) -> io::Result<Option<SpaceObservation>> {
+        #[cfg(target_os = "macos")]
+        {
+            let info = self.metadata(path)?;
+            macos_space::observe(path, info.volume_id).map(Some)
+        }
+        #[cfg(windows)]
+        {
+            windows_space::observe(path).map(Some)
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
+        {
+            let _ = path;
+            Ok(None)
         }
     }
 
@@ -83,12 +118,19 @@ impl Platform for NativePlatform {
             {
                 continue;
             }
+            let observation = self.space_observation(disk.mount_point()).ok().flatten();
+            let (total_bytes, available_bytes) = observation
+                .as_ref()
+                .map_or((disk.total_space(), disk.available_space()), |space| {
+                    (space.total_bytes, space.available_bytes)
+                });
             volumes.push(Volume {
+                space_observation: observation,
                 id: info.volume_id,
                 name: disk.name().to_string_lossy().into_owned(),
                 mount_path: NativePath::new(disk.mount_point()),
-                total_bytes: disk.total_space(),
-                available_bytes: disk.available_space(),
+                total_bytes,
+                available_bytes,
             });
         }
         Ok(volumes)
