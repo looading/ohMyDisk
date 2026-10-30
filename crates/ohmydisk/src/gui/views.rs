@@ -5,6 +5,7 @@ use iced::widget::column;
 const HEADER_HEIGHT: f32 = window_chrome::HEADER_HEIGHT;
 const COMPACT_WIDTH: f32 = 1000.0;
 const MODAL_MARGIN: f32 = 12.0;
+const LANGUAGE_CONTROL_WIDTH: f32 = window_chrome::LANGUAGE_CONTROL_WIDTH;
 
 fn compact_for_size(size: iced::Size) -> bool {
     size.width < COMPACT_WIDTH
@@ -52,8 +53,8 @@ fn center_layout(size: iced::Size, amount: &str, label: &str) -> CenterLayout {
     CenterLayout {
         amount_size: (available / units(amount)).clamp(8.0, 26.0),
         label_size: (available / units(label)).clamp(7.0, 10.0),
-        show_amount: side >= 180.0,
-        show_label: side >= 320.0,
+        show_amount: side >= 180.0 && available >= units(amount) * 8.0,
+        show_label: side >= 320.0 && available >= units(label) * 7.0,
         show_name: side >= 420.0,
         show_hint: side >= 480.0,
     }
@@ -85,7 +86,10 @@ impl App {
     }
     fn preview_switch(&self) -> Element<'_, Message> {
         let mut buttons = Row::new().spacing(3);
-        for (preview, label) in [(false, "图表"), (true, "列表")] {
+        for (preview, label) in [
+            (false, self.language.text("Chart", "图表")),
+            (true, self.language.text("List", "列表")),
+        ] {
             let selected = self.compact_preview == preview;
             buttons = buttons.push(
                 button(text(label).size(11))
@@ -149,8 +153,11 @@ impl App {
         }
         let mut modes = Row::new().spacing(3);
         for (mode, label) in [
-            (RootMode::Volume, "卷容量"),
-            (RootMode::Directory, "目录内容"),
+            (RootMode::Volume, self.language.text("Volume", "卷容量")),
+            (
+                RootMode::Directory,
+                self.language.text("Directory", "目录内容"),
+            ),
         ] {
             let selected = self.root_mode == mode;
             modes = modes.push(
@@ -244,26 +251,59 @@ impl App {
     pub(super) fn collection_node_amount(&self, node: &Node) -> String {
         match self.collection_context() {
             CollectionContext::Current => self.node_amount(node),
-            CollectionContext::OtherScan => "其他扫描 · 占用待复核".into(),
-            CollectionContext::ReviewRequired => "占用待复核".into(),
+            CollectionContext::OtherScan => self
+                .language
+                .text("Other scan · usage needs review", "其他扫描 · 占用待复核")
+                .into(),
+            CollectionContext::ReviewRequired => self
+                .language
+                .text("Usage needs review", "占用待复核")
+                .into(),
         }
     }
     pub(super) fn node_amount(&self, node: &Node) -> String {
         let Some(capacity) = self.capacity() else {
-            return "占用待复核".into();
+            return self
+                .language
+                .text("Usage needs review", "占用待复核")
+                .into();
         };
         match node_bytes(node) {
-            None => "未测量".into(),
-            Some(amount) if amount > capacity.total => "测量不一致".into(),
-            Some(_) if shared_zero(node) => "共享 · 归属 0 B".into(),
-            Some(amount) if partly_measured(node) => format!("至少 {} · 部分", bytes(amount)),
+            None => self.language.text("Unmeasured", "未测量").into(),
+            Some(amount) if amount > capacity.total => self
+                .language
+                .text("Inconsistent measurement", "测量不一致")
+                .into(),
+            Some(_) if shared_zero(node) => self
+                .language
+                .text("Shared · 0 B attributed", "共享 · 归属 0 B")
+                .into(),
+            Some(amount) if partly_measured(node) => format!(
+                "{} {} · {}",
+                self.language.text("At least", "至少"),
+                bytes(amount),
+                self.language.text("partial", "部分")
+            ),
             Some(amount) => bytes(amount),
         }
     }
     pub(super) fn collection_amount(&self) -> String {
         match self.collection_context() {
-            CollectionContext::OtherScan => return "来自其他扫描 · 占用待复核".into(),
-            CollectionContext::ReviewRequired => return "占用待复核".into(),
+            CollectionContext::OtherScan => {
+                return self
+                    .language
+                    .text(
+                        "From another scan · usage needs review",
+                        "来自其他扫描 · 占用待复核",
+                    )
+                    .into();
+            }
+            CollectionContext::ReviewRequired => {
+                return self
+                    .language
+                    .text("Usage needs review", "占用待复核")
+                    .into();
+            }
             CollectionContext::Current => {}
         }
         let mut total = 0_u64;
@@ -275,7 +315,10 @@ impl App {
                 continue;
             };
             let Some(sum) = total.checked_add(amount) else {
-                return "测量不一致".into();
+                return self
+                    .language
+                    .text("Inconsistent measurement", "测量不一致")
+                    .into();
             };
             total = sum;
             measured = true;
@@ -285,12 +328,19 @@ impl App {
             .capacity()
             .is_some_and(|capacity| total > capacity.total)
         {
-            return "测量不一致".into();
+            return self
+                .language
+                .text("Inconsistent measurement", "测量不一致")
+                .into();
         }
         if !measured && partial {
-            "未测量".into()
+            self.language.text("Unmeasured", "未测量").into()
         } else if partial {
-            format!("{} · 部分测量", bytes(total))
+            format!(
+                "{} · {}",
+                bytes(total),
+                self.language.text("partially measured", "部分测量")
+            )
         } else {
             bytes(total)
         }
@@ -353,7 +403,10 @@ impl App {
             body = body.push(
                 container(
                     row![
-                        text(banner).size(11).color(WARNING).width(Length::Fill),
+                        text(banner.get(self.language))
+                            .size(11)
+                            .color(WARNING)
+                            .width(Length::Fill),
                         button("×")
                             .style(quiet_button)
                             .on_press(Message::ClearBanner)
@@ -420,23 +473,23 @@ impl App {
     }
     pub(super) fn header(&self) -> Element<'_, Message> {
         let compact = self.compact_layout();
-        let mut title = row![
-            text(APP_NAME).size(if compact { 16 } else { 18 }),
-            text(TAGLINE)
-                .size(if compact { 11 } else { 13 })
-                .color(MUTED)
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center);
+        let mut title = row![text(APP_NAME).size(if compact { 16 } else { 18 })]
+            .spacing(8)
+            .align_y(Alignment::Center);
+        if !compact {
+            title = title.push(text(self.language.tagline()).size(13).color(MUTED));
+        }
         title = title.push(Space::new().width(Length::Fill));
         if !compact {
             title = title.push(
                 text(if self.connecting {
-                    "正在连接本地服务…"
+                    self.language
+                        .text("Connecting to local service…", "正在连接本地服务…")
                 } else if self.client.is_some() {
-                    "本地磁盘分析"
+                    self.language.text("Local disk analysis", "本地磁盘分析")
                 } else {
-                    "本地服务未连接"
+                    self.language
+                        .text("Local service disconnected", "本地服务未连接")
                 })
                 .size(11)
                 .color(MUTED),
@@ -453,9 +506,9 @@ impl App {
         );
         let pick = button(
             text(if compact {
-                "＋ 文件夹"
+                self.language.text("＋ Folder", "＋ 文件夹")
             } else {
-                "＋ 扫描文件夹"
+                self.language.text("＋ Scan folder", "＋ 扫描文件夹")
             })
             .size(12),
         )
@@ -474,14 +527,25 @@ impl App {
                 .map(|_| Message::PickFolder),
         );
         let mut header = Row::new().align_y(Alignment::Center).height(HEADER_HEIGHT);
+        let language =
+            iced::widget::pick_list(Language::ALL, Some(self.language), Message::SetLanguage)
+                .text_size(11)
+                .padding([7, 8])
+                .width(LANGUAGE_CONTROL_WIDTH);
         if cfg!(target_os = "macos") {
             header = header.push(Space::new().width(window_chrome::MACOS_TRAFFIC_LIGHT_WIDTH));
         }
         header = header
             .push(drag)
+            .push(language)
+            .push(Space::new().width(8))
             .push(pick)
             .push(Space::new().width(8))
-            .push(self.chrome.controls().map(Message::WindowChrome));
+            .push(
+                self.chrome
+                    .controls(self.language)
+                    .map(Message::WindowChrome),
+            );
         container(header)
             .height(HEADER_HEIGHT)
             .width(Length::Fill)
@@ -491,8 +555,17 @@ impl App {
     pub(super) fn sources_view(&self) -> Element<'_, Message> {
         let compact = self.compact_layout();
         let mut disks = column![
-            text("磁盘与文件夹").size(if compact { 24 } else { 27 }),
-            text("先看容量，再探索占用空间。").size(12).color(MUTED)
+            text(self.language.text("Disks and folders", "磁盘与文件夹")).size(if compact {
+                24
+            } else {
+                27
+            }),
+            text(self.language.text(
+                "Check capacity, then explore disk usage.",
+                "先看容量，再探索占用空间。"
+            ))
+            .size(12)
+            .color(MUTED)
         ]
         .spacing(14);
         for source in &self.sources {
@@ -514,7 +587,7 @@ impl App {
             let mut actions = Row::new().spacing(8).align_y(Alignment::Center);
             if let Some(scan) = recent {
                 actions = actions.push(
-                    button(text("查看结果").size(11))
+                    button(text(self.language.text("View results", "查看结果")).size(11))
                         .padding([8, 12])
                         .style(quiet_button)
                         .on_press(Message::OpenScan(scan.scan_id.clone())),
@@ -523,9 +596,9 @@ impl App {
             actions = actions.push(
                 button(
                     text(if recent.is_some() {
-                        "重新扫描"
+                        self.language.text("Rescan", "重新扫描")
                     } else {
-                        "扫描"
+                        self.language.text("Scan", "扫描")
                     })
                     .size(12),
                 )
@@ -556,9 +629,17 @@ impl App {
             .width(Length::Fill);
             let mut usage = column![
                 text(if valid {
-                    format!("{} 可用 · {} 总容量", bytes(totals.1), bytes(totals.0))
+                    format!(
+                        "{} {} · {} {}",
+                        bytes(totals.1),
+                        self.language.text("available", "可用"),
+                        bytes(totals.0),
+                        self.language.text("total", "总容量")
+                    )
                 } else {
-                    "容量观测暂不可用".into()
+                    self.language
+                        .text("Capacity observation unavailable", "容量观测暂不可用")
+                        .into()
                 })
                 .size(11)
                 .color(MUTED)
@@ -594,16 +675,19 @@ impl App {
                     .width(Length::Fill)
                     .style(|_| rounded_style(CARD, 12.0)),
             );
-            if let Some(hint) = source_hint(source) {
+            if let Some(hint) = source_hint(source, self.language) {
                 disks = disks.push(text(hint).size(10).color(MUTED).width(Length::Fill));
             }
         }
         if self.sources.is_empty() {
             disks = disks.push(
                 text(if self.connecting {
-                    "正在发现磁盘…"
+                    self.language.text("Discovering disks…", "正在发现磁盘…")
                 } else {
-                    "选择一个文件夹开始分析。"
+                    self.language.text(
+                        "Choose a folder to start analyzing.",
+                        "选择一个文件夹开始分析。",
+                    )
                 })
                 .size(12)
                 .color(MUTED),
@@ -616,7 +700,7 @@ impl App {
                 .any(|source| source.mount_path.display == "/System/Volumes/Data")
         {
             disks = disks.push(
-                text("APFS 系统入口与数据入口可能共享同一容器，容量不能相加。")
+                text(self.language.text("APFS system and data volumes may share a container. Their capacities cannot be added together.", "APFS 系统入口与数据入口可能共享同一容器，容量不能相加。"))
                     .size(11)
                     .color(MUTED)
                     .width(Length::Fill),
@@ -624,14 +708,14 @@ impl App {
         }
         if self.client.is_none() && !self.connecting {
             disks = disks.push(
-                button("重新连接")
+                button(self.language.text("Reconnect", "重新连接"))
                     .padding(9)
                     .style(accent_button)
                     .on_press(Message::Retry),
             );
         }
         disks = disks.push(Space::new().height(8)).push(row![
-            text("已保存的扫描").size(15),
+            text(self.language.text("Saved scans", "已保存的扫描")).size(15),
             Space::new().width(Length::Fill),
             text(self.scans.len().to_string()).size(11).color(MUTED)
         ]);
@@ -643,13 +727,13 @@ impl App {
                 text(if compact {
                     format!(
                         "{} · {}",
-                        scan_size_summary(scan),
+                        scan_size_summary(scan, self.language),
                         self.scan_time_label(scan)
                     )
                 } else {
                     format!(
                         "{} · {} · {}",
-                        scan_size_summary(scan),
+                        scan_size_summary(scan, self.language),
                         self.scan_time_label(scan),
                         timestamp(scan.created_at)
                     )
@@ -666,19 +750,29 @@ impl App {
                         .padding([11, 10])
                         .style(quiet_button)
                         .on_press(Message::OpenScan(scan.scan_id.clone())),
-                    button(text(if compact { "×" } else { "关闭记录" }).size(11))
-                        .padding(9)
-                        .style(quiet_button)
-                        .on_press(Message::CloseScan(scan.scan_id.clone()))
+                    button(
+                        text(if compact {
+                            "×"
+                        } else {
+                            self.language.text("Close record", "关闭记录")
+                        })
+                        .size(11)
+                    )
+                    .padding(9)
+                    .style(quiet_button)
+                    .on_press(Message::CloseScan(scan.scan_id.clone()))
                 ]
                 .align_y(Alignment::Center),
             );
         }
         if self.scans.is_empty() {
             disks = disks.push(
-                text("扫描完成后，可在这里重新打开结果。")
-                    .size(12)
-                    .color(MUTED),
+                text(self.language.text(
+                    "Completed scans can be reopened here.",
+                    "扫描完成后，可在这里重新打开结果。",
+                ))
+                .size(12)
+                .color(MUTED),
             );
         }
         let mut content = column![scroll_area::vertical(disks).height(Length::Fill)]
@@ -711,24 +805,31 @@ impl App {
         .spacing(2);
         let overview = button(
             text(if compact {
-                "磁盘"
+                self.language.text("Disks", "磁盘")
             } else {
-                "磁盘与文件夹"
+                self.language.text("Disks and folders", "磁盘与文件夹")
             })
             .size(11),
         )
         .padding([6, 7])
         .style(quiet_button)
         .on_press(Message::Overview);
-        let rescan = button(text(if compact { "↻" } else { "↻ 重新扫描" }).size(12))
-            .padding([7, 10])
-            .style(quiet_button)
-            .on_press_maybe(
-                self.scan
-                    .as_ref()
-                    .filter(|_| self.active.is_none() && !self.busy)
-                    .map(|_| Message::Rescan),
-            );
+        let rescan = button(
+            text(if compact {
+                "↻"
+            } else {
+                self.language.text("↻ Rescan", "↻ 重新扫描")
+            })
+            .size(12),
+        )
+        .padding([7, 10])
+        .style(quiet_button)
+        .on_press_maybe(
+            self.scan
+                .as_ref()
+                .filter(|_| self.active.is_none() && !self.busy)
+                .map(|_| Message::Rescan),
+        );
         let mut path = Row::new().spacing(3).align_y(Alignment::Center);
         let count = if self.chrome.size.width < 1200.0 {
             2
@@ -779,27 +880,34 @@ impl App {
             row![
                 column![
                     row![
-                        text(job_label(&job.work)).size(12).color(GREEN),
+                        text(job_label(&job.work, self.language))
+                            .size(12)
+                            .color(GREEN),
                         Space::new().width(Length::Fill),
                         text(format!(
-                            "已用时 {}",
-                            scan_clock::format_duration(job.clock.elapsed_ms())
+                            "{} {}",
+                            self.language.text("Elapsed", "已用时"),
+                            scan_clock::format_duration(job.clock.elapsed_ms(), self.language)
                         ))
                         .size(12)
                         .color(WHITE)
                     ]
                     .align_y(Alignment::Center),
-                    text(format!("{} · {}", state_label(&job.state), job.progress))
-                        .size(11)
-                        .color(MUTED)
+                    text(format!(
+                        "{} · {}",
+                        state_label(&job.state, self.language),
+                        job.progress.get(self.language)
+                    ))
+                    .size(11)
+                    .color(MUTED)
                 ]
                 .spacing(5)
                 .width(Length::Fill),
                 button(
                     text(if job.state == "cancel_requested" {
-                        "正在停止…"
+                        self.language.text("Stopping…", "正在停止…")
                     } else {
-                        "停止"
+                        self.language.text("Stop", "停止")
                     })
                     .size(11)
                 )
@@ -824,7 +932,9 @@ impl App {
                     row![
                         self.preview_switch(),
                         Space::new().width(Length::Fill),
-                        text("目录预览").size(11).color(MUTED)
+                        text(self.language.text("Directory preview", "目录预览"))
+                            .size(11)
+                            .color(MUTED)
                     ]
                     .align_y(Alignment::Center)
                 )
@@ -861,27 +971,27 @@ impl App {
             } else if !attribution_visible {
                 self.root_amount()
                     .map(bytes)
-                    .unwrap_or_else(|| "未测量".into())
+                    .unwrap_or_else(|| self.language.text("Unmeasured", "未测量").into())
             } else if let Some(node) = focus {
                 match (node_bytes(node), self.current_node_bytes(node)) {
                     (Some(_), Some(amount)) => bytes(amount),
-                    (Some(_), None) => "不一致".into(),
-                    (None, _) => "未测量".into(),
+                    (Some(_), None) => self.language.text("Inconsistent", "不一致").into(),
+                    (None, _) => self.language.text("Unmeasured", "未测量").into(),
                 }
             } else if root {
                 self.root_amount()
                     .map(bytes)
-                    .unwrap_or_else(|| "未测量".into())
+                    .unwrap_or_else(|| self.language.text("Unmeasured", "未测量").into())
             } else {
                 self.current_location_bytes()
                     .map(bytes)
-                    .unwrap_or_else(|| "未测量".into())
+                    .unwrap_or_else(|| self.language.text("Unmeasured", "未测量").into())
             };
         let name =
             if let Some(segment) = sector.filter(|segment| segment.target.node_id().is_none()) {
-                space_title(&segment.target)
+                space_title(&segment.target, self.language)
             } else if !attribution_visible {
-                "所在文件系统"
+                self.language.text("File system", "所在文件系统")
             } else {
                 focus
                     .map(|node| node.name.as_str())
@@ -890,37 +1000,43 @@ impl App {
                             .as_ref()
                             .map(|location| location.name.as_str())
                     })
-                    .unwrap_or("空间分析")
+                    .unwrap_or(self.language.text("Space analysis", "空间分析"))
             };
         let center_label = if sector.is_some_and(|segment| segment.target.node_id().is_none()) {
-            "空间分类"
+            self.language.text("Space category", "空间分类")
         } else if !attribution_visible {
-            "所在卷已用/保留"
+            self.language
+                .text("Volume used / reserved", "所在卷已用/保留")
         } else if focus.is_some_and(|node| node_bytes(node).is_none()) {
-            "占用未测量"
+            self.language.text("Usage unmeasured", "占用未测量")
         } else if focus.is_some_and(shared_zero) {
-            "共享 · 归属占用"
+            self.language
+                .text("Shared · attributed usage", "共享 · 归属占用")
         } else if focus.is_some_and(partly_measured) {
-            "至少已归属占用"
+            self.language
+                .text("Minimum attributed usage", "至少已归属占用")
         } else if !root
             && self
                 .location
                 .as_ref()
                 .is_some_and(|location| location.measurement_partial)
         {
-            "至少已归属占用"
+            self.language
+                .text("Minimum attributed usage", "至少已归属占用")
         } else if focus.is_some() || !root {
-            "已归属占用"
+            self.language.text("Attributed usage", "已归属占用")
         } else if self.capacity().is_none() || self.display_mode() == RootMode::Volume {
-            "所在卷已用/保留"
+            self.language
+                .text("Volume used / reserved", "所在卷已用/保留")
         } else if scan
             .space_accounting
             .as_ref()
             .is_some_and(|accounting| accounting.measurement_status == "partial")
         {
-            "至少已归属占用"
+            self.language
+                .text("Minimum attributed usage", "至少已归属占用")
         } else {
-            "已归属占用"
+            self.language.text("Attributed usage", "已归属占用")
         };
         let header_metric = format!("{center_label} · {amount}");
         let effective_hover = focus
@@ -958,15 +1074,15 @@ impl App {
             if layout.show_hint {
                 lines = lines.push(
                     text(if self.breadcrumbs.len() > 1 {
-                        "↑ 点击圆心返回"
+                        self.language.text("↑ Back", "↑ 点击圆心返回")
                     } else if focus.is_some() {
-                        "文件详情见右侧"
+                        self.language.text("Details →", "文件详情见右侧")
                     } else if self.capacity().is_some()
                         && self.display_mode() == RootMode::Directory
                     {
-                        "目录内容"
+                        self.language.text("Directory", "目录内容")
                     } else {
-                        "系统观测"
+                        self.language.text("System observation", "系统观测")
                     })
                     .size(9)
                     .color(MUTED),
@@ -982,25 +1098,26 @@ impl App {
         .width(Length::Fill)
         .height(Length::Fill);
         let status = if scan.known_stale {
-            "旧快照 · 正在刷新"
+            self.language
+                .text("Old snapshot · refreshing", "旧快照 · 正在刷新")
         } else if self.capacity().is_none() {
-            "需要重新测量"
+            self.language.text("Remeasurement needed", "需要重新测量")
         } else if scan
             .space_accounting
             .as_ref()
             .is_some_and(|a| a.measurement_status == "unavailable")
         {
-            "未测量"
+            self.language.text("Unmeasured", "未测量")
         } else if scan
             .space_accounting
             .as_ref()
             .is_some_and(|a| a.measurement_status != "complete")
         {
-            "部分测量"
+            self.language.text("Partially measured", "部分测量")
         } else if scan.complete {
-            "扫描快照"
+            self.language.text("Scan snapshot", "扫描快照")
         } else {
-            "扫描不完整"
+            self.language.text("Incomplete scan", "扫描不完整")
         };
         let compact = self.compact_layout();
         let short = self.short_layout();
@@ -1010,7 +1127,7 @@ impl App {
                     self.location
                         .as_ref()
                         .map(|location| location.name.as_str())
-                        .unwrap_or("空间分析"),
+                        .unwrap_or(self.language.text("Space analysis", "空间分析")),
                     if compact { 24 } else { 38 }
                 ))
                 .size(if compact { 18 } else { 22 })
@@ -1022,11 +1139,20 @@ impl App {
             text(if compact || short {
                 header_metric
             } else if self.capacity().is_none() {
-                "当前仅显示系统容量概览".into()
+                self.language
+                    .text("Showing system capacity overview", "当前仅显示系统容量概览")
+                    .into()
             } else if self.loading {
-                "正在载入目录…".into()
+                self.language
+                    .text("Loading directory…", "正在载入目录…")
+                    .into()
             } else {
-                "悬停预览 · 点击进入 · 拖入收集区".into()
+                self.language
+                    .text(
+                        "Hover to preview · click to open · drag to collection",
+                        "悬停预览 · 点击进入 · 拖入收集区",
+                    )
+                    .into()
             })
             .size(11)
             .color(MUTED)
@@ -1069,27 +1195,43 @@ impl App {
             let mut labels = Row::new().spacing(14).align_y(Alignment::Center);
             let directory = self.capacity().is_some() && self.display_mode() == RootMode::Directory;
             if directory {
-                labels = labels.push(legend("已归属占用", GREEN)).push(legend(
-                    "较小项目与未载入成员",
-                    Color::from_rgb(0.27, 0.31, 0.39),
-                ));
+                labels = labels
+                    .push(legend(
+                        self.language.text("Attributed usage", "已归属占用"),
+                        GREEN,
+                    ))
+                    .push(legend(
+                        self.language
+                            .text("Smaller and unloaded items", "较小项目与未载入成员"),
+                        Color::from_rgb(0.27, 0.31, 0.39),
+                    ));
             } else if self.capacity().is_some() {
                 labels = labels
-                    .push(legend("已归属", GREEN))
+                    .push(legend(self.language.text("Attributed", "已归属"), GREEN))
                     .push(legend(
-                        "共享、系统及未归属",
+                        self.language
+                            .text("Shared, system and unattributed", "共享、系统及未归属"),
                         Color::from_rgb(0.50, 0.50, 0.61),
                     ))
-                    .push(legend("可用", MUTED));
+                    .push(legend(self.language.text("Available", "可用"), MUTED));
             } else {
                 labels = labels
-                    .push(legend("系统已用 / 保留", Color::from_rgb(0.30, 0.45, 0.66)))
-                    .push(legend("可用", MUTED));
+                    .push(legend(
+                        self.language
+                            .text("System used / reserved", "系统已用 / 保留"),
+                        Color::from_rgb(0.30, 0.45, 0.66),
+                    ))
+                    .push(legend(self.language.text("Available", "可用"), MUTED));
             }
             let capacity_label = format!(
-                "{}{} 可用 / {}",
-                if directory { "所在卷 " } else { "" },
+                "{}{} {} / {}",
+                if directory {
+                    self.language.text("Volume ", "所在卷 ")
+                } else {
+                    ""
+                },
                 bytes(available),
+                self.language.text("available", "可用"),
                 bytes(total)
             );
             if short {
@@ -1106,11 +1248,21 @@ impl App {
             }
         }
         let captured = if self.capacity().is_some() {
-            format!("快照 {}", timestamp(scan.created_at))
+            format!(
+                "{} {}",
+                self.language.text("Snapshot", "快照"),
+                timestamp(scan.created_at)
+            )
         } else if let Some(observation) = self.space_observation() {
-            format!("容量观测 {}", timestamp(observation.captured_at))
+            format!(
+                "{} {}",
+                self.language.text("Capacity observed", "容量观测"),
+                timestamp(observation.captured_at)
+            )
         } else {
-            "未取得系统容量观测".into()
+            self.language
+                .text("No system capacity observation", "未取得系统容量观测")
+                .into()
         };
         if !short {
             chart = chart.push(
@@ -1163,7 +1315,7 @@ impl App {
                     .as_ref()
                     .map(|location| location.name.as_str())
             })
-            .unwrap_or("目录");
+            .unwrap_or(self.language.text("Directory", "目录"));
         let related = self.space_info == Some(sunburst::Target::Unattributed);
         let shown_count = entries
             .iter()
@@ -1171,7 +1323,14 @@ impl App {
             .count();
         let mut list = Column::new().spacing(2);
         if related {
-            list = list.push(text("相关未测量与共享项目").size(11).color(MUTED));
+            list = list.push(
+                text(self.language.text(
+                    "Related unmeasured and shared items",
+                    "相关未测量与共享项目",
+                ))
+                .size(11)
+                .color(MUTED),
+            );
         }
         for (index, node) in entries
             .iter()
@@ -1256,7 +1415,11 @@ impl App {
             );
         }
         if self.preview_loading {
-            list = list.push(text("正在预览目录…").size(12).color(MUTED));
+            list = list.push(
+                text(self.language.text("Previewing directory…", "正在预览目录…"))
+                    .size(12)
+                    .color(MUTED),
+            );
         }
         if let Some(error) = &self.preview_error {
             list = list.push(text(error).size(11).color(WARNING));
@@ -1264,13 +1427,13 @@ impl App {
         if shown_count == 0 && !self.preview_loading {
             list = list.push(
                 text(if self.loading {
-                    "正在读取目录…"
+                    self.language.text("Reading directory…", "正在读取目录…")
                 } else if related {
-                    "当前已载入列表中没有相关项目。系统开销和扫描范围之外的数据不会作为文件出现。"
+                    self.language.text("No related items in the loaded list. System overhead and data outside the scan do not appear as files.", "当前已载入列表中没有相关项目。系统开销和扫描范围之外的数据不会作为文件出现。")
                 } else if self.preview_owner.is_some() {
-                    "此目录没有可列出的子项"
+                    self.language.text("This directory has no items to list", "此目录没有可列出的子项")
                 } else {
-                    "此目录没有可列出的子项；未测量和共享项仍会保留在列表中。"
+                    self.language.text("This directory has no items to list. Unmeasured and shared items remain visible in the list.", "此目录没有可列出的子项；未测量和共享项仍会保留在列表中。")
                 })
                 .size(11)
                 .color(MUTED),
@@ -1278,15 +1441,22 @@ impl App {
         }
         if self.preview_owner.is_some() {
             if preview.is_some_and(|preview| preview.next_cursor.is_some()) {
-                list = list.push(text("点击目录，查看所有项目").size(10).color(MUTED));
+                list = list.push(
+                    text(self.language.text(
+                        "Open the directory to see all items",
+                        "点击目录，查看所有项目",
+                    ))
+                    .size(10)
+                    .color(MUTED),
+                );
             }
         } else if self.next_cursor.is_some() {
             list = list.push(
                 button(
                     text(if self.loading {
-                        "载入中…"
+                        self.language.text("Loading…", "载入中…")
                     } else {
-                        "载入更多项目"
+                        self.language.text("Load more items", "载入更多项目")
                     })
                     .size(11),
                 )
@@ -1302,10 +1472,15 @@ impl App {
                 for (target, label, amount) in [
                     (
                         sunburst::Target::Unattributed,
-                        "共享、系统及未归属",
+                        self.language
+                            .text("Shared, system and unattributed", "共享、系统及未归属"),
                         capacity.remainder,
                     ),
-                    (sunburst::Target::Available, "可用空间", capacity.available),
+                    (
+                        sunburst::Target::Available,
+                        self.language.text("Available space", "可用空间"),
+                        capacity.available,
+                    ),
                 ] {
                     list = list.push(
                         button(
@@ -1330,9 +1505,9 @@ impl App {
                     .width(Length::Fill),
                 Space::new().width(Length::Fill),
                 text(if self.preview_owner.is_some() {
-                    "预览"
+                    self.language.text("Preview", "预览")
                 } else {
-                    "按占用排序"
+                    self.language.text("Sorted by usage", "按占用排序")
                 })
                 .size(10)
                 .color(MUTED)
@@ -1344,9 +1519,11 @@ impl App {
             pane = pane.push(
                 container(
                     column![
-                        text(space_title(target)).size(13),
-                        text(space_description(target)).size(11).color(MUTED),
-                        button(text("返回目录").size(10))
+                        text(space_title(target, self.language)).size(13),
+                        text(space_description(target, self.language))
+                            .size(11)
+                            .color(MUTED),
+                        button(text(self.language.text("Back to directory", "返回目录")).size(10))
                             .padding(5)
                             .style(quiet_button)
                             .on_press(Message::ShowSpaceInfo(target.clone()))
@@ -1364,27 +1541,36 @@ impl App {
                 .push(text(crop(&node.path.display, 90)).size(10).color(MUTED))
                 .push(
                     text(format!(
-                        "详情 · 逻辑大小 {} · 报告分配 {}",
+                        "{} · {} {} · {} {}",
+                        self.language.text("Details", "详情"),
+                        self.language.text("logical size", "逻辑大小"),
                         bytes(node.logical_bytes),
+                        self.language.text("reported allocation", "报告分配"),
                         node.allocated_bytes
                             .map(bytes)
-                            .unwrap_or_else(|| "未知".into())
+                            .unwrap_or_else(|| self.language.text("Unknown", "未知").into())
                     ))
                     .size(10)
                     .color(MUTED),
                 );
             if shared_zero(node) {
                 pane = pane.push(
-                    text("这个项目仍包含数据；共享数据未独占归属到此项。")
+                    text(self.language.text("This item still contains data. Shared data is not exclusively attributed to it.", "这个项目仍包含数据；共享数据未独占归属到此项。"))
                         .size(10)
                         .color(MUTED),
                 );
             }
             pane = pane.push(
-                button(text("在文件管理器中显示").size(11))
-                    .padding(7)
-                    .style(quiet_button)
-                    .on_press_maybe(self.current_reveal_message(&node.id)),
+                button(
+                    text(
+                        self.language
+                            .text("Show in file manager", "在文件管理器中显示"),
+                    )
+                    .size(11),
+                )
+                .padding(7)
+                .style(quiet_button)
+                .on_press_maybe(self.current_reveal_message(&node.id)),
             );
         }
         mouse_area(
@@ -1411,22 +1597,22 @@ impl App {
         container(
             column![
                 text(if inconsistent {
-                    "占用测量未对齐"
+                    self.language.text("Usage measurements do not align", "占用测量未对齐")
                 } else {
-                    "需要重新测量占用"
+                    self.language.text("Usage remeasurement needed", "需要重新测量占用")
                 })
                 .size(17),
                 text(if inconsistent {
-                    "系统容量、可用空间与扫描归属暂不能组成同一份占用图。当前只显示系统容量概览。"
+                    self.language.text("System capacity, available space and scan attribution cannot yet form a consistent usage chart. Only the system capacity overview is shown.", "系统容量、可用空间与扫描归属暂不能组成同一份占用图。当前只显示系统容量概览。")
                 } else {
-                    "这份扫描没有占用测量。重新扫描后，可按实际归属探索文件与目录。"
+                    self.language.text("This scan has no usage measurement. Rescan to explore files and directories by attributed usage.", "这份扫描没有占用测量。重新扫描后，可按实际归属探索文件与目录。")
                 })
                 .size(12)
                 .color(MUTED),
-                text("原始逻辑大小仍保留，不会作为占用空间显示。")
+                text(self.language.text("Original logical sizes are retained separately from disk usage.", "原始逻辑大小仍保留，不会作为占用空间显示。"))
                     .size(11)
                     .color(MUTED),
-                button(text("重新扫描").size(12))
+                button(text(self.language.text("Rescan", "重新扫描")).size(12))
                     .padding([10, 16])
                     .style(accent_button)
                     .on_press_maybe(self.active.is_none().then_some(Message::Rescan))
@@ -1450,26 +1636,46 @@ impl App {
         let layout = collector_layout(size, self.collector_panel.is_expanded());
         let compact = layout.compact;
         let summary = if self.collection.is_empty() {
-            "拖入项目，或在目录旁点 ＋".into()
+            self.language
+                .text(
+                    "Drag items here, or click ＋ beside a directory",
+                    "拖入项目，或在目录旁点 ＋",
+                )
+                .into()
         } else {
             let amount = self.collection_amount();
             if self.collection_context() != CollectionContext::Current {
-                format!("{} 项 · {amount}", self.collection.len())
-            } else if amount == "未测量" {
-                format!("{} 项 · 占用未测量", self.collection.len())
+                format!(
+                    "{} {} · {amount}",
+                    self.collection.len(),
+                    self.language.text("items", "项")
+                )
+            } else if amount == self.language.text("Unmeasured", "未测量") {
+                format!(
+                    "{} {} · {}",
+                    self.collection.len(),
+                    self.language.text("items", "项"),
+                    self.language.text("Usage unmeasured", "占用未测量")
+                )
             } else {
-                format!("{} 项 · 已知归属 {}", self.collection.len(), amount)
+                format!(
+                    "{} {} · {} {}",
+                    self.collection.len(),
+                    self.language.text("items", "项"),
+                    self.language.text("Known attribution", "已知归属"),
+                    amount
+                )
             }
         };
         let enabled = !self.collection.is_empty() && self.active.is_none() && !self.busy;
         let trash = || {
             button(
                 text(if self.busy {
-                    "正在准备…"
+                    self.language.text("Preparing…", "正在准备…")
                 } else if compact {
-                    "回收站…"
+                    self.language.text("Trash…", "回收站…")
                 } else {
-                    "移入回收站…"
+                    self.language.text("Move to trash…", "移入回收站…")
                 })
                 .size(11),
             )
@@ -1478,7 +1684,7 @@ impl App {
             .on_press_maybe(enabled.then_some(Message::Prepare(CleanupMode::Trash)))
         };
         let clear = || {
-            button(text("清空").size(11))
+            button(text(self.language.text("Clear", "清空")).size(11))
                 .padding([7, 9])
                 .style(quiet_button)
                 .on_press_maybe(
@@ -1486,7 +1692,7 @@ impl App {
                 )
         };
         let permanent = || {
-            button(text("永久删除…").size(11))
+            button(text(self.language.text("Delete permanently…", "永久删除…")).size(11))
                 .padding([8, 10])
                 .style(quiet_button)
                 .on_press_maybe(enabled.then_some(Message::Prepare(CleanupMode::Permanent)))
@@ -1494,9 +1700,9 @@ impl App {
         let mut title = row![
             button(
                 text(if self.collector_panel.is_expanded() {
-                    "⌄ 收集区"
+                    self.language.text("⌄ Collection", "⌄ 收集区")
                 } else {
-                    "› 收集区"
+                    self.language.text("› Collection", "› 收集区")
                 })
                 .size(12)
             )
@@ -1547,9 +1753,12 @@ impl App {
             }
             if self.collection.is_empty() {
                 chips = chips.push(
-                    text("收集只保存选择，执行前会逐项核对。")
-                        .size(11)
-                        .color(MUTED),
+                    text(self.language.text(
+                        "Collection saves your selection. Each item is checked before cleanup.",
+                        "收集只保存选择，执行前会逐项核对。",
+                    ))
+                    .size(11)
+                    .color(MUTED),
                 );
             }
             let cards = scroll_area::vertical(chips.wrap().vertical_spacing(9))
@@ -1568,9 +1777,9 @@ impl App {
             if layout.show_hint {
                 body = body.push(
                     text(if compact {
-                        "实际释放空间以系统观测为准。"
+                        self.language.text("Freed space is determined by system observation.", "实际释放空间以系统观测为准。")
                     } else {
-                        "收集大小不等于可释放空间；实际变化以清理后的系统观测为准。"
+                        self.language.text("Collection size may differ from freed space. Actual changes are measured by the system after cleanup.", "收集大小不等于可释放空间；实际变化以清理后的系统观测为准。")
                     })
                     .size(10)
                     .color(MUTED)
@@ -1606,26 +1815,31 @@ fn legend(label: &str, color: Color) -> Element<'_, Message> {
     .align_y(Alignment::Center)
     .into()
 }
-fn space_title(target: &sunburst::Target) -> &'static str {
+fn space_title(target: &sunburst::Target, language: Language) -> &'static str {
     match target {
-        sunburst::Target::Available => "可用空间",
-        sunburst::Target::Unattributed => "共享、系统及未归属空间",
-        sunburst::Target::UsedOverview => "系统已用 / 保留空间",
-        _ => "较小项目与未载入成员",
+        sunburst::Target::Available => language.text("Available space", "可用空间"),
+        sunburst::Target::Unattributed => language.text(
+            "Shared, system and unattributed space",
+            "共享、系统及未归属空间",
+        ),
+        sunburst::Target::UsedOverview => {
+            language.text("System used / reserved space", "系统已用 / 保留空间")
+        }
+        _ => language.text("Smaller and unloaded items", "较小项目与未载入成员"),
     }
 }
-fn space_description(target: &sunburst::Target) -> &'static str {
+fn space_description(target: &sunburst::Target, language: Language) -> &'static str {
     match target {
         sunburst::Target::Available => {
-            "这是系统报告的原始可用容量。它属于磁盘容量的一部分，无法加入清理计划。"
+            language.text("This is the raw available capacity reported by the system. It is part of disk capacity and cannot be added to a cleanup plan.", "这是系统报告的原始可用容量。它属于磁盘容量的一部分，无法加入清理计划。")
         }
         sunburst::Target::Unattributed => {
-            "这部分尚未独占归属到扫描内文件，可能包括共享数据、快照、系统开销、权限受限项目，以及扫描范围之外的文件。它不是一个可删除的目录。"
+            language.text("This space is not exclusively attributed to scanned files. It may include shared data, snapshots, system overhead, restricted items and files outside the scan. It cannot be deleted as a directory.", "这部分尚未独占归属到扫描内文件，可能包括共享数据、快照、系统开销、权限受限项目，以及扫描范围之外的文件。它不是一个可删除的目录。")
         }
         sunburst::Target::UsedOverview => {
-            "这是容量减去原始可用空间的结果。完成占用测量后，才能进一步分解到目录。"
+            language.text("This is total capacity minus raw available space. Complete usage measurement to break it down by directory.", "这是容量减去原始可用空间的结果。完成占用测量后，才能进一步分解到目录。")
         }
-        _ => "这些成员在当前图中合并显示，打开对应目录后可在列表中逐项查看。",
+        _ => language.text("These items are grouped in the current chart. Open their directory to inspect each one in the list.", "这些成员在当前图中合并显示，打开对应目录后可在列表中逐项查看。"),
     }
 }
 
@@ -1641,14 +1855,78 @@ mod tests {
             }, "complete":true, "created_at":10, "state":"completed"
         });
         let unknown: ScanSummary = serde_json::from_value(legacy.clone()).unwrap();
-        assert_eq!(scan_time_summary(&unknown), "总耗时未记录");
+        assert_eq!(
+            scan_time_summary(&unknown, Language::Chinese),
+            "总耗时未记录"
+        );
         let mut timed = legacy;
         timed["elapsed_ms"] = json!(72_340);
         let completed: ScanSummary = serde_json::from_value(timed.clone()).unwrap();
-        assert_eq!(scan_time_summary(&completed), "总耗时 1 分 12 秒");
+        assert_eq!(
+            scan_time_summary(&completed, Language::Chinese),
+            "总耗时 1 分 12 秒"
+        );
         timed["state"] = json!("running");
         let running: ScanSummary = serde_json::from_value(timed).unwrap();
-        assert_eq!(scan_time_summary(&running), "已用时 1 分 12 秒");
+        assert_eq!(
+            scan_time_summary(&running, Language::Chinese),
+            "已用时 1 分 12 秒"
+        );
+    }
+    #[test]
+    fn space_explanations_and_usage_summaries_follow_the_current_language() {
+        for target in [
+            sunburst::Target::Available,
+            sunburst::Target::Unattributed,
+            sunburst::Target::UsedOverview,
+            sunburst::Target::Aggregate {
+                owner_id: "root".into(),
+            },
+        ] {
+            let english = space_title(&target, Language::English);
+            let chinese = space_title(&target, Language::Chinese);
+            assert_ne!(english, chinese);
+            assert!(english.is_ascii());
+            assert!(!chinese.is_ascii());
+            assert_ne!(
+                space_description(&target, Language::English),
+                space_description(&target, Language::Chinese)
+            );
+        }
+        let mut app = measured_app("/tmp/fixture", "complete");
+        let selected = node("用户文件.txt", None);
+        app.collection = vec![selected.clone()];
+        app.draft_scan_id = Some("measured".into());
+        assert_eq!(app.node_amount(&selected), "未测量");
+        assert_eq!(app.collection_amount(), "未测量");
+        app.language = Language::English;
+        assert_eq!(app.node_amount(&selected), "Unmeasured");
+        assert_eq!(app.collection_amount(), "Unmeasured");
+        assert_eq!(app.collection[0].name, "用户文件.txt");
+        app.draft_scan_id = Some("another-scan".into());
+        assert_eq!(
+            app.collection_node_amount(&selected),
+            "Other scan · usage needs review"
+        );
+        app.language = Language::Chinese;
+        assert_eq!(
+            app.collection_node_amount(&selected),
+            "其他扫描 · 占用待复核"
+        );
+    }
+    #[test]
+    fn compact_header_keeps_the_language_picker_and_title_reachable() {
+        // Compact headers omit the optional tagline. Both native-caption layouts
+        // retain at least 120 px for the product name and its drag area at 500 px.
+        for native_caption_width in [window_chrome::MACOS_TRAFFIC_LIGHT_WIDTH, 138.0] {
+            let fixed_width = native_caption_width
+                + window_chrome::PICK_FOLDER_BUTTON_WIDTH
+                + LANGUAGE_CONTROL_WIDTH
+                + 16.0;
+            assert!(500.0 - fixed_width >= 120.0);
+        }
+        assert_eq!(Language::English.label(), "English");
+        assert_eq!(Language::Chinese.label(), "中文");
     }
     use ohmydisk_core::{NativePath, NodeSpace};
     #[test]
@@ -1710,7 +1988,9 @@ mod tests {
         }
     }
     fn app() -> App {
-        App::new(PathBuf::from("/tmp/ohmydisk-gui-unit-test-unused")).0
+        let mut app = App::new(PathBuf::from("/tmp/ohmydisk-gui-unit-test-unused")).0;
+        app.language = Language::Chinese;
+        app
     }
     fn measured_app(root: &str, status: &str) -> App {
         let mut app = app();
@@ -1977,7 +2257,13 @@ mod tests {
         app.children.push(incomplete);
         app.collect("incomplete");
         assert_eq!(app.collection.len(), 1);
-        assert!(app.banner.as_ref().unwrap().contains("不完整"));
+        assert!(
+            app.banner
+                .as_ref()
+                .unwrap()
+                .get(app.language)
+                .contains("不完整")
+        );
     }
     #[test]
     fn layout_boundaries_keep_modals_inside_the_header_and_viewport() {
@@ -2009,24 +2295,32 @@ mod tests {
             iced::Size::new(300.0, 320.0),
             iced::Size::new(700.0, 550.0),
         ] {
-            for amount in ["8.8 MB", "995 GB", "18447 PB", "未测量"] {
-                let label = "所在卷已用/保留";
-                let layout = center_layout(size, amount, label);
-                let hole = size.width.min(size.height) * 0.465 * 0.27 * 2.0;
-                if layout.show_amount {
-                    let text_units = amount
-                        .chars()
-                        .map(|c| if c.is_ascii() { 0.62 } else { 1.0 })
-                        .sum::<f32>();
-                    assert!(text_units * layout.amount_size <= hole * 0.9);
-                }
-                if size.height < 180.0 {
-                    assert!(!layout.show_amount);
-                    assert!(!layout.show_name);
-                }
-                if size.height < 420.0 {
-                    assert!(!layout.show_name);
-                    assert!(!layout.show_hint);
+            for amount in ["8.8 MB", "995 GB", "18447 PB", "未测量", "Unmeasured"] {
+                for label in ["所在卷已用/保留", "Minimum attributed usage"] {
+                    let layout = center_layout(size, amount, label);
+                    let hole = size.width.min(size.height) * 0.465 * 0.27 * 2.0;
+                    if layout.show_amount {
+                        let text_units = amount
+                            .chars()
+                            .map(|c| if c.is_ascii() { 0.62 } else { 1.0 })
+                            .sum::<f32>();
+                        assert!(text_units * layout.amount_size <= hole * 0.9);
+                    }
+                    if layout.show_label {
+                        let text_units = label
+                            .chars()
+                            .map(|c| if c.is_ascii() { 0.62 } else { 1.0 })
+                            .sum::<f32>();
+                        assert!(text_units * layout.label_size <= hole * 0.9);
+                    }
+                    if size.height < 180.0 {
+                        assert!(!layout.show_amount);
+                        assert!(!layout.show_name);
+                    }
+                    if size.height < 420.0 {
+                        assert!(!layout.show_name);
+                        assert!(!layout.show_hint);
+                    }
                 }
             }
         }
@@ -2088,14 +2382,23 @@ mod tests {
         let _ = app.update(Message::ReviewExpired {
             plan_id: "old-plan".into(),
         });
-        assert_eq!(app.banner.as_deref(), Some("current plan ready"));
+        assert_eq!(
+            app.banner.as_ref().map(|banner| banner.get(app.language)),
+            Some("current plan ready")
+        );
         assert_eq!(app.confirm_text, "永久删除");
         assert_eq!(app.review.as_ref().unwrap().id, "current-plan");
         app.review.as_mut().unwrap().expires_at = ohmydisk_core::now_ms().saturating_sub(1);
         let _ = app.update(Message::ReviewExpired {
             plan_id: "current-plan".into(),
         });
-        assert!(app.banner.as_ref().unwrap().contains("过期"));
+        assert!(
+            app.banner
+                .as_ref()
+                .unwrap()
+                .get(app.language)
+                .contains("过期")
+        );
         assert!(app.confirm_text.is_empty());
         app.confirm_text = "永久删除".into();
         let _ = app.update(Message::Execute);

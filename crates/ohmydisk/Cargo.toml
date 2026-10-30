@@ -12,6 +12,7 @@ ohmydisk-platform.workspace = true
 ohmydisk-service.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
 clap = { version = "4", features = ["derive"] }
 rmcp = { version = "=3.8.0", default-features = false, features = ["server", "transport-io"] }
@@ -21,7 +22,7 @@ dirs = "6"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "=0.6.5"
-objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSView", "NSResponder", "NSWindow", "NSEvent", "NSButton", "NSControl"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSView", "NSResponder", "NSWindow", "NSEvent", "NSButton", "NSControl", "NSApplication", "NSMenu", "NSMenuItem", "NSCell"] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSGeometry", "NSObject", "NSArray"] }
 raw-window-handle = "=0.6.2"
 
