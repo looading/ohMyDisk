@@ -681,7 +681,7 @@ impl App {
                     .color(MUTED),
             );
         }
-        let mut content = column![scrollable(disks).height(Length::Fill)]
+        let mut content = column![scroll_area::vertical(disks).height(Length::Fill)]
             .spacing(12)
             .padding(if compact { 16 } else { 28 })
             .height(Length::Fill);
@@ -750,11 +750,7 @@ impl App {
                     .on_press(Message::Navigate(location.id.clone())),
             );
         }
-        let path = scrollable(path)
-            .direction(scrollable::Direction::Horizontal(
-                scrollable::Scrollbar::default(),
-            ))
-            .width(Length::Fill);
+        let path = scroll_area::horizontal(path).width(Length::Fill);
         let content: Element<'_, Message> = if compact {
             column![
                 row![controls, overview, Space::new().width(Length::Fill), rescan]
@@ -1361,7 +1357,7 @@ impl App {
                 .style(|_| rounded_style(CARD, 9.0)),
             );
         }
-        pane = pane.push(scrollable(list).height(Length::Fill));
+        pane = pane.push(scroll_area::vertical(list).height(Length::Fill));
         if let Some(node) = self.hover.as_deref().and_then(|id| self.find_node(id)) {
             pane = pane
                 .push(rule::horizontal(1))
@@ -1556,7 +1552,7 @@ impl App {
                         .color(MUTED),
                 );
             }
-            let cards = scrollable(chips.wrap().vertical_spacing(9))
+            let cards = scroll_area::vertical(chips.wrap().vertical_spacing(9))
                 .width(Length::Fill)
                 .height(Length::Fill);
             body = body.push(cards).push(

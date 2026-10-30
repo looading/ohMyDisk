@@ -1133,9 +1133,9 @@ impl<M: Clone> Widget<M, Theme, iced::Renderer> for Source<'_, M> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{Message as AppMessage, sunburst};
+    use super::super::{Message as AppMessage, scroll_area, sunburst};
     use super::*;
-    use iced::widget::{Space, canvas, column, scrollable};
+    use iced::widget::{Space, canvas, column};
     use ohmydisk_core::{NativePath, NodeKind};
     use std::path::Path;
 
@@ -1335,7 +1335,7 @@ mod tests {
                 Some(entry(1, "node")),
                 AppMessage::Navigate("node".into()),
             );
-            let content = scrollable(column![
+            let content = scroll_area::vertical(column![
                 Space::new().height(160.0),
                 row,
                 Space::new().height(800.0),
