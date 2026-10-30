@@ -1,5 +1,5 @@
 //! Native application-menu events share the GUI's existing language command.
-use super::locale::Language;
+use super::{locale::Language, preferences};
 use iced::{Subscription, Task};
 
 #[cfg(target_os = "macos")]
@@ -23,6 +23,7 @@ pub(super) struct Command {
 struct Selection {
     language: Language,
     revision: u64,
+    pending: Option<Command>,
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -46,6 +47,7 @@ impl LanguageSender {
             language,
             revision: selection.revision,
         };
+        selection.pending = Some(command);
         self.sender.send_replace(Some(command));
         command
     }
@@ -55,6 +57,25 @@ impl LanguageSender {
 pub(super) struct Bridge {
     #[cfg(any(target_os = "macos", test))]
     shared: Arc<Shared>,
+}
+
+#[derive(Clone)]
+pub(super) struct Shutdown {
+    bridge: Bridge,
+    writer: preferences::Writer,
+}
+
+impl Shutdown {
+    /// Also called synchronously by AppKit before native process termination.
+    pub fn flush(&self) -> Result<(), String> {
+        if let Some(language) = self.bridge.pending_language() {
+            self.writer.select(language);
+        }
+        if self.writer.has_unsaved() {
+            self.writer.flush()?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -72,6 +93,7 @@ impl Bridge {
             let selection = Arc::new(Mutex::new(Selection {
                 language,
                 revision: 0,
+                pending: None,
             }));
             Self {
                 shared: Arc::new(Shared {
@@ -94,6 +116,7 @@ impl Bridge {
             let mut selection = self.selection();
             selection.revision = selection.revision.wrapping_add(1);
             selection.language = language;
+            selection.pending = None;
         }
         #[cfg(not(any(target_os = "macos", test)))]
         let _ = language;
@@ -120,12 +143,26 @@ impl Bridge {
                 return false;
             }
             selection.language = command.language;
+            selection.pending = None;
             true
         }
         #[cfg(not(any(target_os = "macos", test)))]
         {
             let _ = command;
             false
+        }
+    }
+
+    /// Normal close may happen before the GUI drains a native activation.
+    /// Preserve that latest intent without waiting for another event-loop turn.
+    pub fn pending_language(&self) -> Option<Language> {
+        #[cfg(any(target_os = "macos", test))]
+        {
+            self.selection().pending.map(|command| command.language)
+        }
+        #[cfg(not(any(target_os = "macos", test)))]
+        {
+            None
         }
     }
 
@@ -145,25 +182,35 @@ impl Bridge {
         }
     }
 
-    pub fn synchronize(&self) -> Task<()> {
+    pub fn shutdown(&self, writer: preferences::Writer) -> Shutdown {
+        Shutdown {
+            bridge: self.clone(),
+            writer,
+        }
+    }
+
+    pub fn synchronize(&self, writer: preferences::Writer) -> Task<()> {
         #[cfg(target_os = "macos")]
         {
             let bridge = self.clone();
+            let shutdown = self.shutdown(writer);
             iced::window::oldest().then(move |window| {
                 let Some(id) = window else {
                     return Task::none();
                 };
                 let bridge = bridge.clone();
+                let shutdown = shutdown.clone();
                 iced::window::run(id, move |_| {
                     // Read current GUI state when executing on the main thread,
                     // so an earlier queued callback cannot restore old checks.
-                    macos::sync(bridge.language(), bridge.sender())
+                    macos::sync(bridge.language(), bridge.sender(), shutdown)
                 })
                 .discard()
             })
         }
         #[cfg(not(target_os = "macos"))]
         {
+            let _ = writer;
             Task::none()
         }
     }

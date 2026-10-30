@@ -335,10 +335,13 @@ impl App {
             ),
         };
         let app_menu = app_menu::Bridge::new(language);
+        let preference_writer = preferences::Writer::new(data_dir.clone(), language);
         let task = Task::batch([
             Self::connect(data_dir.clone()),
             window_chrome::State::initial_task().map(Message::WindowChrome),
-            app_menu.synchronize().map(|()| Message::MenuUpdated),
+            app_menu
+                .synchronize(preference_writer.clone())
+                .map(|()| Message::MenuUpdated),
         ]);
         (
             Self {
@@ -346,7 +349,7 @@ impl App {
                 app_menu,
                 language_generation: 0,
                 language_save_in_flight: None,
-                preference_writer: preferences::Writer::new(data_dir.clone(), language),
+                preference_writer,
                 chrome: window_chrome::State::default(),
                 compact_preview: false,
                 collector_interaction: interaction::Controller::default(),
@@ -396,7 +399,10 @@ impl App {
     }
     fn apply_language(&mut self, language: Language) -> Task<Message> {
         self.collector_interaction.cancel();
-        let menu = self.app_menu.synchronize().map(|()| Message::MenuUpdated);
+        let menu = self
+            .app_menu
+            .synchronize(self.preference_writer.clone())
+            .map(|()| Message::MenuUpdated);
         if self.language != language {
             self.language = language;
             self.preference_writer.select(language);
@@ -580,7 +586,9 @@ impl App {
                 return if refresh_menu {
                     Task::batch([
                         task,
-                        self.app_menu.synchronize().map(|()| Message::MenuUpdated),
+                        self.app_menu
+                            .synchronize(self.preference_writer.clone())
+                            .map(|()| Message::MenuUpdated),
                     ])
                 } else {
                     task
@@ -1950,10 +1958,11 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        if !self.preference_writer.has_unsaved() {
-            return;
-        }
-        if let Err(error) = self.preference_writer.flush() {
+        if let Err(error) = self
+            .app_menu
+            .shutdown(self.preference_writer.clone())
+            .flush()
+        {
             eprintln!("Could not save language preference on exit: {error}");
         }
     }
@@ -2217,6 +2226,65 @@ mod language_tests {
         let restarted = App::new(data_dir).0;
         assert_eq!(restarted.language, Language::Chinese);
         assert_eq!(restarted.app_menu.language(), Language::Chinese);
+    }
+
+    #[test]
+    fn normal_close_persists_native_choice_before_gui_dispatch() {
+        let Fixture {
+            app,
+            _data_dir: temporary,
+        } = app();
+        let data_dir = temporary.path().join("state");
+        assert_eq!(app.data_dir, data_dir);
+        let _ = app.app_menu.sender().send(Language::Chinese);
+        // No menu request or save completion reaches the GUI before shutdown.
+        assert_eq!(app.language, Language::English);
+        assert_eq!(app.app_menu.pending_language(), Some(Language::Chinese));
+        assert!(!app.preference_writer.has_unsaved());
+        drop(app);
+
+        assert!(data_dir.join("preferences.json").is_file());
+        assert!(!temporary.path().join("preferences.json").exists());
+        assert_eq!(preferences::load(&data_dir).unwrap(), Language::Chinese);
+        let restarted = App::new(data_dir).0;
+        assert_eq!(restarted.language, Language::Chinese);
+        assert_eq!(restarted.app_menu.language(), Language::Chinese);
+    }
+
+    #[test]
+    fn native_shutdown_flushes_pending_choice_before_app_drop() {
+        let app = app();
+        let shutdown = app.app_menu.shutdown(app.preference_writer.clone());
+        let _ = app.app_menu.sender().send(Language::Chinese);
+
+        // AppKit termination uses this capsule before Rust state may be dropped.
+        shutdown.flush().unwrap();
+
+        assert_eq!(preferences::load(&app.data_dir).unwrap(), Language::Chinese);
+        assert_eq!(app.language, Language::English);
+        assert!(!app.preference_writer.has_unsaved());
+    }
+
+    #[test]
+    fn normal_close_keeps_newer_topbar_choice_over_pending_native_command() {
+        let Fixture {
+            mut app,
+            _data_dir: temporary,
+        } = app();
+        let data_dir = temporary.path().join("state");
+        assert_eq!(app.data_dir, data_dir);
+        let _ = app.app_menu.sender().send(Language::Chinese);
+        let _ = app.update(Message::SetLanguage(Language::English));
+        assert_eq!(app.app_menu.pending_language(), None);
+        assert_eq!(app.language, Language::English);
+        assert!(!app.preference_writer.has_unsaved());
+        drop(app);
+
+        assert!(!temporary.path().join("preferences.json").exists());
+        assert_eq!(preferences::load(&data_dir).unwrap(), Language::English);
+        let restarted = App::new(data_dir).0;
+        assert_eq!(restarted.language, Language::English);
+        assert_eq!(restarted.app_menu.language(), Language::English);
     }
 
     #[test]
