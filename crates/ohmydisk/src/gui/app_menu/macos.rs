@@ -1,14 +1,18 @@
 //! Extend winit's application menu without replacing its standard commands.
 
-use super::{Language, LanguageSender};
+use super::{Language, LanguageSender, Shutdown};
 use objc2::{
     DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained,
     runtime::AnyObject, sel,
 };
 use objc2_app_kit::{
-    NSApplication, NSControlStateValueOff, NSControlStateValueOn, NSMenu, NSMenuItem,
+    NSApplication, NSApplicationWillTerminateNotification, NSControlStateValueOff,
+    NSControlStateValueOn, NSMenu, NSMenuItem,
 };
-use objc2_foundation::{NSObject, NSObjectProtocol, NSString};
+use objc2_foundation::{
+    NSNotification, NSNotificationCenter, NSObject, NSObjectProtocol, NSString,
+};
+use std::io::Write;
 
 // winit's standard items use their default zero tags. These tags identify only
 // the menu items owned here; existing menu positions and titles are not keys.
@@ -53,6 +57,54 @@ impl LanguageMenuHandler {
     }
 }
 
+define_class!(
+    // SAFETY: NSObject is subclassable. The observer remains main-thread-only,
+    // initializes its Shutdown ivar before init, and adds no custom deallocation.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "OhMyDiskLanguageTerminationObserver"]
+    #[ivars = Shutdown]
+    struct LanguageTerminationObserver;
+
+    // SAFETY: NSObjectProtocol adds no invariants beyond the NSObject superclass.
+    unsafe impl NSObjectProtocol for LanguageTerminationObserver {}
+
+    impl LanguageTerminationObserver {
+        // SAFETY: This is NSNotificationCenter's exact selector-observer ABI:
+        // void return and one notification argument. NSApplication posts its
+        // termination notification on the main thread before native termination.
+        #[unsafe(method(applicationWillTerminate:))]
+        fn application_will_terminate(&self, _notification: Option<&NSNotification>) {
+            // Native terminate: may exit without Rust App::drop. Drain the
+            // latest pending menu choice and preference writes here instead.
+            // Contain unexpected Rust panics at the Objective-C callback edge.
+            let saved = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.ivars().flush()
+            }))
+            .is_ok_and(|result| result.is_ok());
+            if !saved {
+                let _ = writeln!(std::io::stderr().lock(), "OhMyDisk: could not save language preference before termination");
+            }
+            if std::env::var_os("OMD_TRACE_LANGUAGE_MENU").is_some() {
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "OhMyDisk language menu termination: {}",
+                    if saved { "saved" } else { "failed" },
+                );
+            }
+        }
+    }
+);
+
+impl LanguageTerminationObserver {
+    fn new(shutdown: Shutdown, mtm: MainThreadMarker) -> Retained<Self> {
+        let allocated = Self::alloc(mtm).set_ivars(shutdown);
+        // SAFETY: The Shutdown ivar is initialized. NSObject's init has this
+        // exact signature; allocation and initialization stay on the main thread.
+        unsafe { msg_send![super(allocated), init] }
+    }
+}
+
 fn item(menu: &NSMenu, tag: isize, mtm: MainThreadMarker) -> Retained<NSMenuItem> {
     if let Some(item) = menu.itemWithTag(tag) {
         return item;
@@ -65,7 +117,7 @@ fn item(menu: &NSMenu, tag: isize, mtm: MainThreadMarker) -> Retained<NSMenuItem
 
 /// Called only from iced's window event-loop callback. Native objects remain
 /// owned by AppKit; the caller receives no menu handles or retained pointers.
-pub(super) fn sync(language: Language, sender: LanguageSender) -> bool {
+pub(super) fn sync(language: Language, sender: LanguageSender, shutdown: Shutdown) -> bool {
     let Some(mtm) = MainThreadMarker::new() else {
         return false;
     };
@@ -90,6 +142,26 @@ pub(super) fn sync(language: Language, sender: LanguageSender) -> bool {
         app_menu.insertItem_atIndex(&item, app_menu.numberOfItems().min(1));
         item
     };
+    let center = NSNotificationCenter::defaultCenter();
+    if let Some(previous) = language_item.representedObject() {
+        // SAFETY: This is the prior observer stored on our own tagged item. It
+        // remains retained during removal; no native observer outlives its owner.
+        unsafe { center.removeObserver(&previous) };
+    }
+    let observer = LanguageTerminationObserver::new(shutdown, mtm);
+    // SAFETY: The menu item strongly retains this NSObject observer before its
+    // selector is registered. The selector's ABI is implemented above, the
+    // exported notification name is valid, and the object filter is the live
+    // shared NSApplication. The observer holds no menu/application back-reference.
+    unsafe {
+        language_item.setRepresentedObject(Some(&observer));
+        center.addObserver_selector_name_object(
+            &observer,
+            sel!(applicationWillTerminate:),
+            Some(NSApplicationWillTerminateNotification),
+            Some(&application),
+        );
+    }
     let title = NSString::from_str(language.text("Language", "语言"));
     language_item.setTitle(&title);
     language_item.setEnabled(true);
