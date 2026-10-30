@@ -2,6 +2,7 @@
 //! the UI only owns navigation, an uncommitted collection, and explicit approval.
 mod collector_interaction;
 mod scan_clock;
+mod scroll_area;
 mod space_view;
 mod sunburst;
 mod views;
@@ -16,8 +17,8 @@ use std::{
 };
 
 use iced::widget::{
-    Column, Row, Space, button, canvas, column, container, mouse_area, row, rule, scrollable,
-    stack, text, text_input,
+    Column, Row, Space, button, canvas, column, container, mouse_area, row, rule, stack, text,
+    text_input,
 };
 use iced::{
     Alignment, Background, Border, Color, Element, Font, Length, Subscription, Task, Theme,
@@ -1576,8 +1577,12 @@ impl App {
             .on_press_maybe(enabled.then_some(Message::Execute))
         ]
         .spacing(12);
-        let body = column![heading, scrollable(content).height(Length::Fill), actions]
-            .spacing(if compact { 7 } else { 18 });
+        let body = column![
+            heading,
+            scroll_area::vertical(content).height(Length::Fill),
+            actions
+        ]
+        .spacing(if compact { 7 } else { 18 });
         container(body)
             .padding(if compact { 12 } else { 30 })
             .width(dimensions.width)
@@ -1684,7 +1689,7 @@ impl App {
         .spacing(if compact { 8 } else { 20 });
         let body = column![
             heading,
-            scrollable(content).height(Length::Fill),
+            scroll_area::vertical(content).height(Length::Fill),
             button(text("返回空间分析").size(13))
                 .padding([12, 20])
                 .style(accent_button)
