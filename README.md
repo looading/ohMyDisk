@@ -22,7 +22,7 @@ Extract the archive, then open `OhMyDisk.app` on macOS or `ohmydisk.exe` on Wind
 
 - Scan local disks or folders, including hidden files, while reporting permission errors and skipped boundaries.
 - Explore disk usage with a linked sunburst chart and size-sorted directory list, hover previews, and breadcrumb navigation.
-- Switch between **English** and **中文** in the top bar at any time. English is the default; your choice is saved for the next launch.
+- Switch between **English** and **中文** in the top bar on all platforms, or through the macOS app menu **OhMyDisk → Language / 语言 → English / 中文**. English is the default; changes apply immediately and are saved for the next launch.
 - Drag chart segments or directory rows into the collection, then resize the collection to review more items.
 - Review exact cleanup targets before moving them to the system trash. Permanent deletion is a separate, explicitly confirmed action.
 - Track and cancel background jobs, reopen saved scans, and use the same local service through stdio MCP while the GUI is closed.

@@ -1,5 +1,6 @@
 //! Native desktop frontend. Filesystem work belongs to the shared local service;
 //! the UI only owns navigation, an uncommitted collection, and explicit approval.
+mod app_menu;
 mod collector_interaction;
 mod locale;
 mod preferences;
@@ -203,6 +204,8 @@ struct ReviewPlan {
 #[derive(Clone)]
 enum Message {
     SetLanguage(Language),
+    MenuLanguageRequested(app_menu::Command),
+    MenuUpdated,
     LanguageSaved {
         generation: u64,
         result: Result<(), String>,
@@ -270,6 +273,7 @@ impl std::fmt::Debug for Message {
 
 struct App {
     language: Language,
+    app_menu: app_menu::Bridge,
     language_generation: u64,
     language_save_in_flight: Option<u64>,
     preference_writer: preferences::Writer,
@@ -330,13 +334,16 @@ impl App {
                 )),
             ),
         };
+        let app_menu = app_menu::Bridge::new(language);
         let task = Task::batch([
             Self::connect(data_dir.clone()),
             window_chrome::State::initial_task().map(Message::WindowChrome),
+            app_menu.synchronize().map(|()| Message::MenuUpdated),
         ]);
         (
             Self {
                 language,
+                app_menu,
                 language_generation: 0,
                 language_save_in_flight: None,
                 preference_writer: preferences::Writer::new(data_dir.clone(), language),
@@ -387,6 +394,23 @@ impl App {
             task,
         )
     }
+    fn apply_language(&mut self, language: Language) -> Task<Message> {
+        self.collector_interaction.cancel();
+        let menu = self.app_menu.synchronize().map(|()| Message::MenuUpdated);
+        if self.language != language {
+            self.language = language;
+            self.preference_writer.select(language);
+            self.confirm_text.clear();
+            self.language_generation += 1;
+            // Preference writes and native checkmarks both follow the same
+            // accepted choice, regardless of which language control emitted it.
+            if self.language_save_in_flight.is_none() {
+                return Task::batch([self.save_language(), menu]);
+            }
+        }
+        menu
+    }
+
     fn save_language(&mut self) -> Task<Message> {
         let generation = self.language_generation;
         self.language_save_in_flight = Some(generation);
@@ -474,6 +498,9 @@ impl App {
         };
         Subscription::batch([
             window_chrome::State::subscription().map(Message::WindowChrome),
+            self.app_menu
+                .subscription()
+                .map(Message::MenuLanguageRequested),
             jobs,
         ])
     }
@@ -482,7 +509,6 @@ impl App {
         if matches!(
             &message,
             Message::Overview
-                | Message::SetLanguage(_)
                 | Message::SetRootMode(_)
                 | Message::ToggleCompactPreview
                 | Message::ToggleCollector
@@ -501,19 +527,15 @@ impl App {
         }
         match message {
             Message::SetLanguage(language) => {
-                if self.language != language {
-                    self.language = language;
-                    self.preference_writer.select(language);
-                    self.confirm_text.clear();
-                    self.language_generation += 1;
-                    // Keep one GUI task in flight. The shared writer also sees
-                    // selections immediately, so exit can flush without waiting
-                    // for a completion message to reach this update loop.
-                    if self.language_save_in_flight.is_none() {
-                        return self.save_language();
-                    }
+                self.app_menu.select(language);
+                return self.apply_language(language);
+            }
+            Message::MenuLanguageRequested(command) => {
+                if self.app_menu.accept(command) {
+                    return self.apply_language(command.language);
                 }
             }
+            Message::MenuUpdated => {}
             Message::LanguageSaved { generation, result } => {
                 if self.language_save_in_flight != Some(generation) {
                     return Task::none();
@@ -530,6 +552,14 @@ impl App {
                 }
             }
             Message::WindowChrome(message) => {
+                let refresh_menu = matches!(
+                    &message,
+                    window_chrome::Message::InitialWindow(Some(_))
+                        | window_chrome::Message::WindowEvent(
+                            _,
+                            iced::window::Event::Opened { .. } | iced::window::Event::Focused
+                        )
+                );
                 if matches!(
                     &message,
                     window_chrome::Message::WindowEvent(
@@ -547,7 +577,14 @@ impl App {
                     self.compact_preview = false;
                     self.reset_preview();
                 }
-                return task;
+                return if refresh_menu {
+                    Task::batch([
+                        task,
+                        self.app_menu.synchronize().map(|()| Message::MenuUpdated),
+                    ])
+                } else {
+                    task
+                };
             }
             Message::CollectorInteraction(event) => match event {
                 interaction::Event::HeightChanged(height) => self.collector_panel.resize(height),
@@ -2027,6 +2064,7 @@ mod language_tests {
     fn missing_preferences_start_in_english() {
         let app = app();
         assert_eq!(app.language, Language::English);
+        assert_eq!(app.app_menu.language(), Language::English);
         assert!(app.banner.is_none());
         assert_eq!(app.language.tagline(), "Space, made clear");
         assert_eq!(job_label(&Work::Scan, app.language), "Scanning");
@@ -2069,9 +2107,11 @@ mod language_tests {
         app.banner = Some(LocalizedText::new("Ready to review", "可以核对"));
         let drag_generation = app.collector_interaction.generation();
 
-        let _ = app.update(Message::SetLanguage(Language::Chinese));
+        let command = app.app_menu.sender().send(Language::Chinese);
+        let _ = app.update(Message::MenuLanguageRequested(command));
 
         assert_eq!(app.language, Language::Chinese);
+        assert_eq!(app.app_menu.language(), Language::Chinese);
         assert_eq!(app.scan.as_ref().unwrap().scan_id, "scan");
         assert_eq!(app.location.as_ref().unwrap().id, "root");
         assert_eq!(app.breadcrumbs[0].id, "root");
@@ -2090,6 +2130,8 @@ mod language_tests {
         assert!(app.collector_interaction.generation() > drag_generation);
 
         let _ = app.update(Message::SetLanguage(Language::English));
+        assert_eq!(app.language, Language::English);
+        assert_eq!(app.app_menu.language(), Language::English);
         assert_eq!(
             app.active.as_ref().unwrap().progress.get(app.language),
             "Scanning · 2 files"
@@ -2098,6 +2140,34 @@ mod language_tests {
             app.banner.as_ref().unwrap().get(app.language),
             "Ready to review"
         );
+    }
+
+    #[test]
+    fn newer_topbar_selection_rejects_stale_native_language_command() {
+        let mut app = app();
+        let stale_command = app.app_menu.sender().send(Language::Chinese);
+        // Even choosing the current language records a newer explicit intent.
+        let _ = app.update(Message::SetLanguage(Language::English));
+        let generation = app.language_generation;
+        let save_in_flight = app.language_save_in_flight;
+        let unsaved = app.preference_writer.has_unsaved();
+
+        let _ = app.update(Message::MenuLanguageRequested(stale_command));
+
+        assert_eq!(app.language, Language::English);
+        assert_eq!(app.app_menu.language(), Language::English);
+        assert_eq!(app.language_generation, generation);
+        assert_eq!(app.language_save_in_flight, save_in_flight);
+        assert_eq!(app.preference_writer.has_unsaved(), unsaved);
+        assert!(!unsaved);
+
+        let latest_command = app.app_menu.sender().send(Language::Chinese);
+        let _ = app.update(Message::MenuLanguageRequested(latest_command));
+
+        assert_eq!(app.language, Language::Chinese);
+        assert_eq!(app.app_menu.language(), Language::Chinese);
+        assert_eq!(app.language_generation, generation + 1);
+        assert!(app.preference_writer.has_unsaved());
     }
 
     #[test]
@@ -2146,6 +2216,7 @@ mod language_tests {
         assert_eq!(preferences::load(&data_dir).unwrap(), Language::Chinese);
         let restarted = App::new(data_dir).0;
         assert_eq!(restarted.language, Language::Chinese);
+        assert_eq!(restarted.app_menu.language(), Language::Chinese);
     }
 
     #[test]
