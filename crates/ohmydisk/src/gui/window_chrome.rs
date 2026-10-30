@@ -1,6 +1,7 @@
 //! Platform window controls and native drag/resize gestures, separate from jobs.
 #[cfg(target_os = "macos")]
 mod macos_drag;
+use super::locale::Language;
 #[cfg(not(target_os = "windows"))]
 use iced::widget::Space;
 #[cfg(target_os = "windows")]
@@ -20,6 +21,10 @@ use std::time::{Duration, Instant};
 
 pub(super) const MACOS_TRAFFIC_LIGHT_WIDTH: f32 = 78.0;
 pub(super) const PICK_FOLDER_BUTTON_WIDTH: f32 = 120.0;
+pub(super) const LANGUAGE_CONTROL_WIDTH: f32 = 86.0;
+#[cfg(target_os = "macos")]
+pub(super) const HEADER_ACTIONS_WIDTH: f32 =
+    LANGUAGE_CONTROL_WIDTH + 8.0 + PICK_FOLDER_BUTTON_WIDTH + 8.0;
 pub(super) const HEADER_HEIGHT: f32 = 48.0;
 const INITIAL_SIZE: Size = Size::new(1370.0, 900.0);
 const MINIMUM_SIZE: Size = Size::new(500.0, 480.0);
@@ -265,7 +270,7 @@ impl State {
         }
     }
 
-    pub fn controls(&self) -> Element<'_, Message> {
+    pub fn controls(&self, language: Language) -> Element<'_, Message> {
         #[cfg(target_os = "windows")]
         {
             let caption = |symbol: &'static str,
@@ -287,24 +292,32 @@ impl State {
                 .into()
             };
             row![
-                caption("−", "最小化", Action::Minimize, false),
+                caption(
+                    "−",
+                    language.text("Minimize", "最小化"),
+                    Action::Minimize,
+                    false
+                ),
                 caption(
                     if self.maximized { "❐" } else { "□" },
                     if self.maximized {
-                        "还原"
+                        language.text("Restore", "还原")
                     } else {
-                        "最大化"
+                        language.text("Maximize", "最大化")
                     },
                     Action::ToggleMaximize,
                     false
                 ),
-                caption("×", "关闭", Action::Close, true),
+                caption("×", language.text("Close", "关闭"), Action::Close, true),
             ]
             .spacing(0)
             .into()
         }
         #[cfg(not(target_os = "windows"))]
-        Space::new().width(0).height(0).into()
+        {
+            let _ = language;
+            Space::new().width(0).height(0).into()
+        }
     }
 }
 

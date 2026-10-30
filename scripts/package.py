@@ -226,6 +226,7 @@ def package(root, *, debug=False, skip_build=False, target=None):
         shutil.rmtree(folder)
     (folder / "docs").mkdir(parents=True)
     shutil.copy2(root / "README.md", folder / "README.md")
+    shutil.copy2(root / "README.zh-CN.md", folder / "README.zh-CN.md")
     shutil.copy2(root / "docs/mcp.md", folder / "docs/mcp.md")
     if (root / "docs/images").is_dir():
         shutil.copytree(root / "docs/images", folder / "docs/images")

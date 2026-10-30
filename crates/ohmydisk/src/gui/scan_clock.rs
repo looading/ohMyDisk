@@ -1,4 +1,5 @@
 //! UI interpolation of the service's measured scan time, independent of RPCs.
+use super::locale::Language;
 use std::time::Instant;
 
 #[derive(Clone, Debug)]
@@ -39,22 +40,31 @@ impl Clock {
     }
 }
 
-pub(super) fn format_duration(ms: u64) -> String {
+pub(super) fn format_duration(ms: u64, language: Language) -> String {
     if ms < 1_000 {
-        return format!("{ms} 毫秒");
+        return format!("{ms} {}", language.text("ms", "毫秒"));
     }
     let seconds = ms / 1_000;
     if seconds < 60 {
-        return format!("{seconds} 秒");
+        return format!("{seconds} {}", language.text("s", "秒"));
     }
     if seconds < 3_600 {
-        return format!("{} 分 {} 秒", seconds / 60, seconds % 60);
+        return format!(
+            "{} {} {} {}",
+            seconds / 60,
+            language.text("m", "分"),
+            seconds % 60,
+            language.text("s", "秒")
+        );
     }
     format!(
-        "{} 小时 {} 分 {} 秒",
+        "{} {} {} {} {} {}",
         seconds / 3_600,
+        language.text("h", "小时"),
         (seconds % 3_600) / 60,
-        seconds % 60
+        language.text("m", "分"),
+        seconds % 60,
+        language.text("s", "秒")
     )
 }
 
@@ -80,15 +90,16 @@ mod tests {
 
     #[test]
     fn duration_preserves_fast_scans_and_long_scan_units() {
-        for (ms, expected) in [
-            (0, "0 毫秒"),
-            (850, "850 毫秒"),
-            (1_000, "1 秒"),
-            (59_999, "59 秒"),
-            (60_000, "1 分 0 秒"),
-            (3_723_456, "1 小时 2 分 3 秒"),
+        for (ms, english, chinese) in [
+            (0, "0 ms", "0 毫秒"),
+            (850, "850 ms", "850 毫秒"),
+            (1_000, "1 s", "1 秒"),
+            (59_999, "59 s", "59 秒"),
+            (60_000, "1 m 0 s", "1 分 0 秒"),
+            (3_723_456, "1 h 2 m 3 s", "1 小时 2 分 3 秒"),
         ] {
-            assert_eq!(format_duration(ms), expected);
+            assert_eq!(format_duration(ms, Language::English), english);
+            assert_eq!(format_duration(ms, Language::Chinese), chinese);
         }
     }
 }
