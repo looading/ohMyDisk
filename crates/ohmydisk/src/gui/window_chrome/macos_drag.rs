@@ -1,7 +1,7 @@
 //! Handle the original AppKit mouseDown without a deferred currentEvent lookup.
 //! This view owns no Rust/global window references; AppKit owns it as a subview.
 //! Native caption buttons share the rendered header's vertical center.
-use super::{HEADER_HEIGHT, MACOS_TRAFFIC_LIGHT_WIDTH, PICK_FOLDER_BUTTON_WIDTH};
+use super::{HEADER_ACTIONS_WIDTH, HEADER_HEIGHT, MACOS_TRAFFIC_LIGHT_WIDTH};
 use objc2::{
     ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained,
 };
@@ -13,7 +13,6 @@ use raw_window_handle::RawWindowHandle;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-const PICKER_RIGHT_SPACING: f64 = 8.0;
 // Diagnostic flags hold no native objects. Fixed messages are emitted once and
 // contain no paths or window IDs; ordinary hidden/closing cases stay quiet.
 static REPORTED_SETUP_ERRORS: AtomicU8 = AtomicU8::new(0);
@@ -118,10 +117,8 @@ impl HeaderDragBand {
 }
 
 fn drag_bounds(bounds: NSRect, flipped: bool) -> Option<NSRect> {
-    let width = bounds.size.width
-        - f64::from(MACOS_TRAFFIC_LIGHT_WIDTH)
-        - f64::from(PICK_FOLDER_BUTTON_WIDTH)
-        - PICKER_RIGHT_SPACING;
+    let width =
+        bounds.size.width - f64::from(MACOS_TRAFFIC_LIGHT_WIDTH) - f64::from(HEADER_ACTIONS_WIDTH);
     let height = bounds.size.height.min(f64::from(HEADER_HEIGHT));
     if !bounds.origin.x.is_finite()
         || !bounds.origin.y.is_finite()
@@ -348,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn header_bounds_preserve_native_controls_picker_and_body_at_all_sizes() {
+    fn header_bounds_preserve_native_controls_language_picker_and_body_at_all_sizes() {
         for width in [500.0, 800.0, 1000.0, 1370.0] {
             for height in [480.0, 600.0, 900.0] {
                 for flipped in [false, true] {
@@ -358,10 +355,10 @@ mod tests {
                     )
                     .unwrap();
                     assert_eq!(frame.origin.x, 78.0);
-                    assert_eq!(frame.size.width, width - 78.0 - 128.0);
+                    assert_eq!(frame.size.width, width - 78.0 - 222.0);
                     assert_eq!(frame.size.height, 48.0);
                     assert_eq!(frame.origin.y, if flipped { 0.0 } else { height - 48.0 });
-                    assert_eq!(frame.origin.x + frame.size.width, width - 128.0);
+                    assert_eq!(frame.origin.x + frame.size.width, width - 222.0);
                 }
             }
         }

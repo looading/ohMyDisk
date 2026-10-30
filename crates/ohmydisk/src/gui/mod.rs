@@ -1,6 +1,8 @@
 //! Native desktop frontend. Filesystem work belongs to the shared local service;
 //! the UI only owns navigation, an uncommitted collection, and explicit approval.
 mod collector_interaction;
+mod locale;
+mod preferences;
 mod scan_clock;
 mod scroll_area;
 mod space_view;
@@ -9,6 +11,7 @@ mod views;
 mod window_chrome;
 
 use collector_interaction as interaction;
+use locale::{Language, LocalizedText};
 
 use std::{
     collections::{HashMap, HashSet},
@@ -41,11 +44,10 @@ const ACCENT: Color = Color::from_rgb(0.48, 0.50, 1.0);
 const GREEN: Color = Color::from_rgb(0.39, 0.79, 0.67);
 const WARNING: Color = Color::from_rgb(0.96, 0.69, 0.39);
 const APP_NAME: &str = "OhMyDisk";
-const TAGLINE: &str = "空间，清晰可见";
 
 pub fn run(data_dir: PathBuf) -> iced::Result {
     let mut app = iced::application(move || App::new(data_dir.clone()), App::update, App::view)
-        .title(|_: &App| format!("{APP_NAME} {TAGLINE}"))
+        .title(|app: &App| format!("{APP_NAME} {}", app.language.tagline()))
         .subscription(App::subscription)
         .theme(Theme::Dark)
         .default_font(chinese_font())
@@ -182,7 +184,7 @@ struct ActiveJob {
     id: String,
     work: Work,
     state: String,
-    progress: String,
+    progress: LocalizedText,
     clock: scan_clock::Clock,
 }
 
@@ -200,6 +202,11 @@ struct ReviewPlan {
 
 #[derive(Clone)]
 enum Message {
+    SetLanguage(Language),
+    LanguageSaved {
+        generation: u64,
+        result: Result<(), String>,
+    },
     WindowChrome(window_chrome::Message),
     CollectorInteraction(interaction::Event),
     ToggleCompactPreview,
@@ -210,8 +217,13 @@ enum Message {
     ToggleCollector,
     ShowSpaceInfo(sunburst::Target),
     ChartHover(Option<sunburst::Target>),
-    PreviewReady { epoch: u64, owner: String },
-    ClearPreview { epoch: u64 },
+    PreviewReady {
+        epoch: u64,
+        owner: String,
+    },
+    ClearPreview {
+        epoch: u64,
+    },
     PreviewPane(bool),
     PickFolder,
     FolderPicked(Option<PathBuf>),
@@ -224,19 +236,26 @@ enum Message {
     Rescan,
     MoreChildren,
     Hover(Option<String>),
-    ChartReleased { segment: Option<sunburst::Segment> },
+    ChartReleased {
+        segment: Option<sunburst::Segment>,
+    },
     Collect(String),
     Remove(String),
     ClearCollection,
     Prepare(CleanupMode),
     DismissReview,
-    ReviewExpired { plan_id: String },
+    ReviewExpired {
+        plan_id: String,
+    },
     ConfirmText(String),
     Execute,
     MorePlan,
     MoreResults,
     DismissResults,
-    RevealInScan { scan_id: String, node_id: String },
+    RevealInScan {
+        scan_id: String,
+        node_id: String,
+    },
     CancelJob,
     Tick,
     ClearBanner,
@@ -250,6 +269,10 @@ impl std::fmt::Debug for Message {
 }
 
 struct App {
+    language: Language,
+    language_generation: u64,
+    language_save_in_flight: Option<u64>,
+    preference_writer: preferences::Writer,
     chrome: window_chrome::State,
     compact_preview: bool,
     collector_interaction: interaction::Controller,
@@ -292,17 +315,31 @@ struct App {
     result_items: Vec<ItemResult>,
     result_cursor: Option<String>,
     result_job: Option<String>,
-    banner: Option<String>,
+    banner: Option<LocalizedText>,
 }
 
 impl App {
     fn new(data_dir: PathBuf) -> (Self, Task<Message>) {
+        let (language, banner) = match preferences::load(&data_dir) {
+            Ok(language) => (language, None),
+            Err(error) => (
+                Language::default(),
+                Some(LocalizedText::new(
+                    format!("Could not load language preference; using English. {error}"),
+                    format!("无法读取语言偏好，已使用英语。{error}"),
+                )),
+            ),
+        };
         let task = Task::batch([
             Self::connect(data_dir.clone()),
             window_chrome::State::initial_task().map(Message::WindowChrome),
         ]);
         (
             Self {
+                language,
+                language_generation: 0,
+                language_save_in_flight: None,
+                preference_writer: preferences::Writer::new(data_dir.clone(), language),
                 chrome: window_chrome::State::default(),
                 compact_preview: false,
                 collector_interaction: interaction::Controller::default(),
@@ -345,9 +382,22 @@ impl App {
                 result_items: Vec::new(),
                 result_cursor: None,
                 result_job: None,
-                banner: None,
+                banner,
             },
             task,
+        )
+    }
+    fn save_language(&mut self) -> Task<Message> {
+        let generation = self.language_generation;
+        self.language_save_in_flight = Some(generation);
+        let writer = self.preference_writer.clone();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || writer.flush())
+                    .await
+                    .map_err(|error| format!("Language preference task failed: {error}"))?
+            },
+            move |result| Message::LanguageSaved { generation, result },
         )
     }
     fn connect(path: PathBuf) -> Task<Message> {
@@ -356,10 +406,13 @@ impl App {
                 let client = Client::connect_or_spawn(path)
                     .await
                     .map_err(|error| error.to_string())?;
-                let capabilities = client
-                    .call("get_capabilities", json!({}))
-                    .await
-                    .map_err(|error| format!("无法读取后台服务能力：{error}"))?;
+                let capabilities =
+                    client
+                        .call("get_capabilities", json!({}))
+                        .await
+                        .map_err(|error| {
+                            format!("Could not read background service capabilities: {error}")
+                        })?;
                 require_occupancy_backend(&capabilities)?;
                 Ok(client)
             },
@@ -381,14 +434,17 @@ impl App {
     }
     fn mark_review_expired(&mut self) {
         self.confirm_text.clear();
-        self.banner = Some(
-            if self.busy {
-                "清理计划已过期；已提交的操作请以后台结果为准。"
-            } else {
-                "清理计划已过期，请返回检查并重新准备计划。"
-            }
-            .into(),
-        );
+        self.banner = Some(if self.busy {
+            LocalizedText::new(
+                "The cleanup plan has expired. Check the background service result for any submitted operation.",
+                "清理计划已过期；已提交的操作请以后台结果为准。",
+            )
+        } else {
+            LocalizedText::new(
+                "The cleanup plan has expired. Go back, review the targets, and prepare a new plan.",
+                "清理计划已过期，请返回检查并重新准备计划。",
+            )
+        });
     }
     fn request(&self, operation: &'static str, args: Value, response: Response) -> Task<Message> {
         let Some(client) = self.client.clone() else {
@@ -426,6 +482,7 @@ impl App {
         if matches!(
             &message,
             Message::Overview
+                | Message::SetLanguage(_)
                 | Message::SetRootMode(_)
                 | Message::ToggleCompactPreview
                 | Message::ToggleCollector
@@ -443,6 +500,35 @@ impl App {
             self.collector_interaction.cancel();
         }
         match message {
+            Message::SetLanguage(language) => {
+                if self.language != language {
+                    self.language = language;
+                    self.preference_writer.select(language);
+                    self.confirm_text.clear();
+                    self.language_generation += 1;
+                    // Keep one GUI task in flight. The shared writer also sees
+                    // selections immediately, so exit can flush without waiting
+                    // for a completion message to reach this update loop.
+                    if self.language_save_in_flight.is_none() {
+                        return self.save_language();
+                    }
+                }
+            }
+            Message::LanguageSaved { generation, result } => {
+                if self.language_save_in_flight != Some(generation) {
+                    return Task::none();
+                }
+                self.language_save_in_flight = None;
+                if generation != self.language_generation {
+                    return self.save_language();
+                }
+                if let Err(error) = result {
+                    self.banner = Some(LocalizedText::new(
+                        format!("Language changed, but the preference could not be saved. {error}"),
+                        format!("语言已切换，但未能保存偏好。{error}"),
+                    ));
+                }
+            }
             Message::WindowChrome(message) => {
                 if matches!(
                     &message,
@@ -545,7 +631,7 @@ impl App {
                         self.client = Some(client);
                         return self.reload();
                     }
-                    Err(error) => self.banner = Some(error),
+                    Err(error) => self.banner = Some(error.into()),
                 }
             }
             Message::Retry => {
@@ -584,7 +670,7 @@ impl App {
                             }
                             return Task::none();
                         }
-                        self.banner = Some(error);
+                        self.banner = Some(error.into());
                         self.loading = false;
                         self.busy = false;
                         if matches!(response, Response::PlanStarted(_) | Response::Executed) {
@@ -594,10 +680,13 @@ impl App {
                 }
             }
             Message::PickFolder => {
+                let language = self.language;
                 return Task::perform(
-                    async {
+                    async move {
                         rfd::AsyncFileDialog::new()
-                            .set_title("选择要分析的文件夹")
+                            .set_title(
+                                language.text("Choose a folder to analyze", "选择要分析的文件夹"),
+                            )
                             .pick_folder()
                             .await
                             .map(|file| file.path().to_owned())
@@ -607,7 +696,10 @@ impl App {
             }
             Message::FolderPicked(Some(path)) | Message::StartScan(path) => {
                 if self.active.is_some() {
-                    self.banner = Some("请等待当前作业结束，或先请求停止。".into());
+                    self.banner = Some(LocalizedText::new(
+                        "Wait for the current job to finish, or request a stop first.",
+                        "请等待当前作业结束，或先请求停止。",
+                    ));
                 } else {
                     self.busy = true;
                     return self.request("start_scan", json!({"root_path": ohmydisk_core::model::NativePath::new(&path), "request_key": new_id()}), Response::StartedScan);
@@ -660,10 +752,10 @@ impl App {
                                 .as_ref()
                                 .is_some_and(|location| location.id == owner_id)
                             {
-                                self.banner = Some(
-                                    "右侧列表包含较小项目，可继续载入。聚合扇区不能加入收集区。"
-                                        .into(),
-                                );
+                                self.banner = Some(LocalizedText::new(
+                                    "The list includes smaller items; load more to see them. Grouped sectors cannot be added to the collection.",
+                                    "右侧列表包含较小项目，可继续载入。聚合扇区不能加入收集区。",
+                                ));
                             } else {
                                 return self.navigate(&owner_id, true);
                             }
@@ -727,7 +819,8 @@ impl App {
                 }
                 if let Some(plan) = &self.review {
                     if !self.busy
-                        && (plan.mode == CleanupMode::Trash || self.confirm_text == "永久删除")
+                        && (plan.mode == CleanupMode::Trash
+                            || self.confirm_text == self.language.confirmation_word())
                     {
                         self.busy = true;
                         let operation = if plan.mode == CleanupMode::Trash {
@@ -795,9 +888,10 @@ impl App {
             }
             Message::CloseScan(id) => {
                 if self.draft_scan_id.as_ref() == Some(&id) && !self.collection.is_empty() {
-                    self.banner = Some(
-                        "这个扫描仍有待处理的收集项目。请先处理或清空收集区，再关闭记录。".into(),
-                    );
+                    self.banner = Some(LocalizedText::new(
+                        "This scan still has collected items. Process them or clear the collection before closing the record.",
+                        "这个扫描仍有待处理的收集项目。请先处理或清空收集区，再关闭记录。",
+                    ));
                 } else {
                     return self.request(
                         "release_scan",
@@ -823,7 +917,7 @@ impl App {
                         id,
                         work: Work::Scan,
                         state: "queued".into(),
-                        progress: "等待扫描…".into(),
+                        progress: LocalizedText::new("Waiting to scan…", "等待扫描…"),
                         clock: scan_clock::Clock::default(),
                     });
                 }
@@ -846,12 +940,21 @@ impl App {
                         let work = self.active.as_ref().unwrap().work.clone();
                         if let Some(active) = &mut self.active {
                             active.state = job.state.clone();
-                            active.progress = format!(
-                                "{} · {} 个文件 · {} 个文件夹 · {}",
-                                phase_label(&job.progress.phase),
-                                job.progress.files,
-                                job.progress.directories,
-                                crop(&job.progress.current_path, 56)
+                            active.progress = LocalizedText::new(
+                                format!(
+                                    "{} · {} files · {} folders · {}",
+                                    phase_label(&job.progress.phase, Language::English),
+                                    job.progress.files,
+                                    job.progress.directories,
+                                    crop(&job.progress.current_path, 56)
+                                ),
+                                format!(
+                                    "{} · {} 个文件 · {} 个文件夹 · {}",
+                                    phase_label(&job.progress.phase, Language::Chinese),
+                                    job.progress.files,
+                                    job.progress.directories,
+                                    crop(&job.progress.current_path, 56)
+                                ),
                             );
                             active.clock.observe(job.elapsed_ms.unwrap_or_else(|| {
                                 ohmydisk_core::now_ms().saturating_sub(job.created_at)
@@ -863,16 +966,26 @@ impl App {
                         self.active = None;
                         self.busy = false;
                         if let Some(error) = job.error {
-                            self.banner = Some(error.to_string());
+                            self.banner = Some(error.to_string().into());
                         }
                         if matches!(job.state.as_str(), "cancelled" | "interrupted") {
-                            self.banner = Some(format!(
-                                "作业已{}。已完成的操作不会回滚；扫描的部分结果会明确标注。",
-                                if job.state == "cancelled" {
-                                    "停止"
-                                } else {
-                                    "中断"
-                                }
+                            self.banner = Some(LocalizedText::new(
+                                format!(
+                                    "The job was {}. Completed operations are kept, and partial scan results are marked.",
+                                    if job.state == "cancelled" {
+                                        "stopped"
+                                    } else {
+                                        "interrupted"
+                                    },
+                                ),
+                                format!(
+                                    "作业已{}。已完成的操作不会回滚；扫描的部分结果会明确标注。",
+                                    if job.state == "cancelled" {
+                                        "停止"
+                                    } else {
+                                        "中断"
+                                    },
+                                ),
                             ));
                         }
                         match work {
@@ -884,14 +997,17 @@ impl App {
                             Work::Prepare(mode) => {
                                 if let Some(plan_id) = string(&job.result, "plan_id") {
                                     self.confirm_text.clear();
-                                    self.banner = Some(
-                                        if mode == CleanupMode::Trash {
-                                            "回收站计划已准备好，请核对目标后确认。"
-                                        } else {
-                                            "永久删除计划已准备好，请逐项核对。"
-                                        }
-                                        .into(),
-                                    );
+                                    self.banner = Some(if mode == CleanupMode::Trash {
+                                        LocalizedText::new(
+                                            "The trash plan is ready. Check the targets before confirming.",
+                                            "回收站计划已准备好，请核对目标后确认。",
+                                        )
+                                    } else {
+                                        LocalizedText::new(
+                                            "The permanent deletion plan is ready. Check every target.",
+                                            "永久删除计划已准备好，请逐项核对。",
+                                        )
+                                    });
                                     return self.request(
                                         "get_cleanup_plan",
                                         json!({"plan_id":plan_id,"limit":100}),
@@ -910,7 +1026,12 @@ impl App {
                         }
                         return self.reload();
                     }
-                    Err(error) => self.banner = Some(format!("无法读取作业：{error}")),
+                    Err(error) => {
+                        self.banner = Some(LocalizedText::new(
+                            format!("Could not read the job: {error}"),
+                            format!("无法读取作业：{error}"),
+                        ))
+                    }
                 }
             }
             Response::Scan { epoch } if epoch == self.epoch => {
@@ -919,7 +1040,10 @@ impl App {
                         let Some(root) = scan.root_id.clone() else {
                             self.overview = true;
                             self.loading = false;
-                            let status = scan_size_summary(&scan);
+                            let status = LocalizedText::new(
+                                scan_size_summary(&scan, Language::English),
+                                scan_size_summary(&scan, Language::Chinese),
+                            );
                             let clock = clock_for_scan(&scan);
                             if let Some(id) = scan.job_id {
                                 if scan.state.as_deref().is_some_and(|state| {
@@ -930,12 +1054,16 @@ impl App {
                                         id,
                                         work: Work::Scan,
                                         state: scan.state.unwrap_or_else(|| "running".into()),
-                                        progress: "已连接到后台扫描，正在读取进度…".into(),
+                                        progress: LocalizedText::new(
+                                            "Connected to the background scan. Reading progress…",
+                                            "已连接到后台扫描，正在读取进度…",
+                                        ),
                                         clock,
                                     });
-                                    self.banner = Some(
-                                        "已接续这个后台扫描，可在此查看进度或请求停止。".into(),
-                                    );
+                                    self.banner = Some(LocalizedText::new(
+                                        "Reconnected to this background scan. View progress or request a stop here.",
+                                        "已接续这个后台扫描，可在此查看进度或请求停止。",
+                                    ));
                                 } else {
                                     self.banner = Some(status);
                                 }
@@ -961,7 +1089,10 @@ impl App {
                                     id: id.clone(),
                                     work: Work::Refresh,
                                     state: "queued".into(),
-                                    progress: "正在取得后台刷新状态…".into(),
+                                    progress: LocalizedText::new(
+                                        "Getting background refresh status…",
+                                        "正在取得后台刷新状态…",
+                                    ),
                                     clock: scan_clock::Clock::default(),
                                 });
                             }
@@ -979,7 +1110,10 @@ impl App {
                     }
                     Err(error) => {
                         self.loading = false;
-                        self.banner = Some(format!("无法读取扫描摘要：{error}"));
+                        self.banner = Some(LocalizedText::new(
+                            format!("Could not read the scan summary: {error}"),
+                            format!("无法读取扫描摘要：{error}"),
+                        ));
                     }
                 }
             }
@@ -1039,7 +1173,10 @@ impl App {
                         id,
                         work: Work::Prepare(mode),
                         state: "queued".into(),
-                        progress: "正在核对文件身份和完整目录清单…".into(),
+                        progress: LocalizedText::new(
+                            "Checking file identities and the complete directory manifest…",
+                            "正在核对文件身份和完整目录清单…",
+                        ),
                         clock: scan_clock::Clock::default(),
                     });
                 }
@@ -1089,7 +1226,10 @@ impl App {
                     self.review = Some(plan);
                     return expiry;
                 } else {
-                    self.banner = Some("服务返回的计划缺少标识或校验值，未开放执行。".into());
+                    self.banner = Some(LocalizedText::new(
+                        "The service returned a plan without an ID or checksum. Execution is unavailable.",
+                        "服务返回的计划缺少标识或校验值，未开放执行。",
+                    ));
                 }
             }
             Response::Executed => {
@@ -1101,7 +1241,10 @@ impl App {
                         id,
                         work: Work::Cleanup,
                         state: "queued".into(),
-                        progress: "正在逐项处理已确认的清理计划…".into(),
+                        progress: LocalizedText::new(
+                            "Processing each item in the approved cleanup plan…",
+                            "正在逐项处理已确认的清理计划…",
+                        ),
                         clock: scan_clock::Clock::default(),
                     });
                 }
@@ -1128,7 +1271,10 @@ impl App {
                             id: job,
                             work: Work::Refresh,
                             state: "queued".into(),
-                            progress: "清理结果已保存，正在重新扫描原位置…".into(),
+                            progress: LocalizedText::new(
+                                "Cleanup results saved. Rescanning the original location…",
+                                "清理结果已保存，正在重新扫描原位置…",
+                            ),
                             clock: scan_clock::Clock::default(),
                         });
                     } else if let Some(id) = string(&value, "refresh_scan_id") {
@@ -1147,7 +1293,10 @@ impl App {
                     self.chart_nodes.clear();
                     self.segments.clear();
                 }
-                self.banner = Some("已关闭扫描记录。源文件未被改动。".into());
+                self.banner = Some(LocalizedText::new(
+                    "Scan record closed. Source files are unchanged.",
+                    "已关闭扫描记录。源文件未被改动。",
+                ));
                 return self.reload();
             }
             _ => {}
@@ -1189,11 +1338,12 @@ impl App {
             scan.job_id.as_ref() == Some(&job.id) && matches!(job.work, Work::Scan | Work::Refresh)
         }) {
             return format!(
-                "已用时 {}",
-                scan_clock::format_duration(job.clock.elapsed_ms())
+                "{} {}",
+                self.language.text("Elapsed", "已用时"),
+                scan_clock::format_duration(job.clock.elapsed_ms(), self.language)
             );
         }
-        scan_time_summary(scan)
+        scan_time_summary(scan, self.language)
     }
     fn navigate(&mut self, id: &str, record: bool) -> Task<Message> {
         let location = if let Some(node) = self.find_node(id) {
@@ -1379,7 +1529,10 @@ impl App {
             .is_some_and(|job| matches!(job.work, Work::Cleanup))
             || self.busy
         {
-            self.banner = Some("清理作业进行中，请等待逐项结果后再修改收集区。".into());
+            self.banner = Some(LocalizedText::new(
+                "Cleanup is running. Wait for the item results before changing the collection.",
+                "清理作业进行中，请等待逐项结果后再修改收集区。",
+            ));
             return false;
         }
         let Some(scan) = &self.scan else {
@@ -1393,16 +1546,24 @@ impl App {
             .as_ref()
             .is_some_and(|draft| draft != &scan.scan_id)
         {
-            self.banner =
-                Some("收集区来自另一份扫描。请先处理或清空，再加入当前扫描的项目。".into());
+            self.banner = Some(LocalizedText::new(
+                "The collection belongs to another scan. Process or clear it before adding items from this scan.",
+                "收集区来自另一份扫描。请先处理或清空，再加入当前扫描的项目。",
+            ));
             return false;
         }
         if Some(node.id.as_str()) == scan.root_id.as_deref() {
-            self.banner = Some("扫描根不能作为清理目标，请选择里面的文件或文件夹。".into());
+            self.banner = Some(LocalizedText::new(
+                "Choose files or folders inside the scan root. The root itself cannot be a cleanup target.",
+                "扫描根不能作为清理目标，请选择里面的文件或文件夹。",
+            ));
             return false;
         }
         if !node.complete {
-            self.banner = Some("该项目的扫描不完整，请先处理访问问题并重新扫描。".into());
+            self.banner = Some(LocalizedText::new(
+                "This item was only partially scanned. Resolve access issues and scan it again first.",
+                "该项目的扫描不完整，请先处理访问问题并重新扫描。",
+            ));
             return false;
         }
         if self
@@ -1414,7 +1575,10 @@ impl App {
         }
         self.collection.retain(|entry| !node_covers(&node, entry));
         if self.collection.len() >= 500 {
-            self.banner = Some("单个清理计划最多选择 500 个目标；可选择其父目录。".into());
+            self.banner = Some(LocalizedText::new(
+                "A cleanup plan can contain up to 500 targets. Consider selecting their parent folder.",
+                "单个清理计划最多选择 500 个目标；可选择其父目录。",
+            ));
             return false;
         }
         self.draft_scan_id = Some(scan.scan_id.clone());
@@ -1423,6 +1587,7 @@ impl App {
     }
 
     fn review_view<'a>(&'a self, plan: &'a ReviewPlan) -> Element<'a, Message> {
+        let language = self.language;
         let permanent = plan.mode == CleanupMode::Permanent;
         let compact = self.compact_layout() || self.chrome.size.height < 760.0;
         let dimensions = self.modal_dimensions(760.0, 680.0);
@@ -1433,9 +1598,13 @@ impl App {
                     column![
                         row![
                             text(crop(&node.name, 64)).size(13).width(Length::Fill),
-                            text(format!("文件逻辑大小 {}", bytes(node.logical_bytes)))
-                                .size(12)
-                                .color(MUTED)
+                            text(format!(
+                                "{} {}",
+                                language.text("Logical file size", "文件逻辑大小"),
+                                bytes(node.logical_bytes)
+                            ))
+                            .size(12)
+                            .color(MUTED)
                         ]
                         .spacing(12),
                         text(&node.path.display)
@@ -1452,15 +1621,25 @@ impl App {
             );
         }
         let mut detail = column![
-            text("服务端核对后的精确目标").size(12).color(MUTED),
+            text(language.text(
+                "Exact targets verified by the service",
+                "服务端核对后的精确目标"
+            ))
+            .size(12)
+            .color(MUTED),
             targets
         ]
         .spacing(10);
         if !plan.manifest.is_empty() {
             detail = detail.push(
-                text(format!("目录成员清单 · 已载入 {} 项", plan.manifest.len()))
-                    .size(12)
-                    .color(MUTED),
+                text(format!(
+                    "{} · {} {}",
+                    language.text("Directory manifest", "目录成员清单"),
+                    plan.manifest.len(),
+                    language.text("items loaded", "项已载入")
+                ))
+                .size(12)
+                .color(MUTED),
             );
             for item in &plan.manifest {
                 let node = item.get("node").unwrap_or(item);
@@ -1469,7 +1648,7 @@ impl App {
                     .and_then(Value::as_str)
                     .or_else(|| node.get("path").and_then(Value::as_str))
                     .or_else(|| node.get("name").and_then(Value::as_str))
-                    .unwrap_or("清单成员");
+                    .unwrap_or(language.text("Manifest item", "清单成员"));
                 detail = detail.push(
                     text(path)
                         .size(10)
@@ -1481,17 +1660,20 @@ impl App {
         }
         if plan.next_cursor.is_some() {
             detail = detail.push(
-                button(text("继续查看完整成员清单").size(12))
-                    .padding(10)
-                    .style(quiet_button)
-                    .on_press(Message::MorePlan),
+                button(
+                    text(language.text("Load more manifest items", "继续查看完整成员清单"))
+                        .size(12),
+                )
+                .padding(10)
+                .style(quiet_button)
+                .on_press(Message::MorePlan),
             );
         }
         let heading = row![
             text(if permanent {
-                "确认永久删除"
+                language.text("Confirm permanent deletion", "确认永久删除")
             } else {
-                "确认移入回收站"
+                language.text("Confirm move to trash", "确认移入回收站")
             })
             .size(if compact { 19 } else { 24 }),
             Space::new().width(Length::Fill),
@@ -1502,9 +1684,15 @@ impl App {
         .align_y(Alignment::Center);
         let mut content = column![
             text(if permanent {
-                "这些项目将永久删除，无法通过回收站恢复。请核对下面的路径与操作方式。"
+                language.text(
+                    "These items will be permanently deleted and cannot be restored from the trash. Check the paths and cleanup method below.",
+                    "这些项目将永久删除，无法通过回收站恢复。请核对下面的路径与操作方式。",
+                )
             } else {
-                "下面的项目将移入系统回收站。回收站占用仍可能保留，实际可用容量以清理后观测为准。"
+                language.text(
+                    "These items will move to the system trash, where they may still use disk space. Available capacity is measured again after cleanup.",
+                    "下面的项目将移入系统回收站。回收站占用仍可能保留，实际可用容量以清理后观测为准。",
+                )
             })
             .size(if compact { 11 } else { 13 })
             .width(Length::Fill)
@@ -1512,15 +1700,17 @@ impl App {
             row![
                 pill(
                     if permanent {
-                        "方式：永久删除"
+                        language.text("Method: permanent deletion", "方式：永久删除")
                     } else {
-                        "方式：回收站"
+                        language.text("Method: trash", "方式：回收站")
                     },
                     if permanent { WARNING } else { GREEN }
                 ),
                 text(format!(
-                    "{} 个目标 · 文件逻辑总量 {}",
+                    "{} {} · {} {}",
                     plan.targets.len(),
+                    language.text("targets", "个目标"),
+                    language.text("Logical file total", "文件逻辑总量"),
                     bytes(plan.bytes)
                 ))
                 .size(13),
@@ -1530,8 +1720,10 @@ impl App {
             .align_y(Alignment::Center),
             detail,
             text(format!(
-                "计划有效期至 {} · 文件发生变化时服务会跳过并报告",
-                timestamp(plan.expires_at)
+                "{} {} · {}",
+                language.text("Plan valid until", "计划有效期至"),
+                timestamp(plan.expires_at),
+                language.text("Changed files are skipped and reported", "文件发生变化时服务会跳过并报告")
             ))
             .size(10)
             .color(MUTED),
@@ -1539,32 +1731,38 @@ impl App {
         .spacing(if compact { 7 } else { 18 });
         if permanent {
             content = content.push(
-                text_input("输入「永久删除」确认此操作方式", &self.confirm_text)
-                    .on_input(Message::ConfirmText)
-                    .padding(if compact { 9 } else { 13 })
-                    .size(13),
+                text_input(
+                    language.text(
+                        "Type DELETE to confirm this method",
+                        "输入「永久删除」确认此操作方式",
+                    ),
+                    &self.confirm_text,
+                )
+                .on_input(Message::ConfirmText)
+                .padding(if compact { 9 } else { 13 })
+                .size(13),
             );
         }
         if let Some(banner) = &self.banner {
-            content = content.push(text(banner).size(11).color(WARNING));
+            content = content.push(text(banner.get(language)).size(11).color(WARNING));
         }
         let enabled = !self.busy
             && ohmydisk_core::model::now_ms() <= plan.expires_at
             && !plan.targets.is_empty()
-            && (!permanent || self.confirm_text == "永久删除");
+            && (!permanent || self.confirm_text == language.confirmation_word());
         let actions = row![
-            button(text("返回检查").size(13))
+            button(text(language.text("Back to review", "返回检查")).size(13))
                 .padding(if compact { [9, 12] } else { [12, 18] })
                 .style(quiet_button)
                 .on_press_maybe((!self.busy).then_some(Message::DismissReview)),
             Space::new().width(Length::Fill),
             button(
                 text(if self.busy {
-                    "正在提交…"
+                    language.text("Submitting…", "正在提交…")
                 } else if permanent {
-                    "永久删除这些项目"
+                    language.text("Permanently delete these items", "永久删除这些项目")
                 } else {
-                    "确认移入回收站"
+                    language.text("Confirm move to trash", "确认移入回收站")
                 })
                 .size(13)
             )
@@ -1592,6 +1790,7 @@ impl App {
     }
 
     fn result_view(&self) -> Element<'_, Message> {
+        let language = self.language;
         let result = self.result.as_ref().unwrap();
         let compact = self.compact_layout() || self.chrome.size.height < 760.0;
         let dimensions = self.modal_dimensions(800.0, 650.0);
@@ -1603,12 +1802,12 @@ impl App {
         let mut list = Column::new().spacing(8);
         for item in &self.result_items {
             let (label, color) = match item.status {
-                ItemStatus::Succeeded => ("已完成", GREEN),
-                ItemStatus::Failed => ("失败", WARNING),
-                ItemStatus::Skipped => ("已跳过", WARNING),
-                ItemStatus::NotStarted => ("未开始", MUTED),
-                ItemStatus::InDoubt => ("结果未知", WARNING),
-                ItemStatus::Started => ("已开始", ACCENT),
+                ItemStatus::Succeeded => (language.text("Completed", "已完成"), GREEN),
+                ItemStatus::Failed => (language.text("Failed", "失败"), WARNING),
+                ItemStatus::Skipped => (language.text("Skipped", "已跳过"), WARNING),
+                ItemStatus::NotStarted => (language.text("Not started", "未开始"), MUTED),
+                ItemStatus::InDoubt => (language.text("Unknown result", "结果未知"), WARNING),
+                ItemStatus::Started => (language.text("Started", "已开始"), ACCENT),
             };
             let mut details = column![
                 row![
@@ -1637,7 +1836,7 @@ impl App {
         }
         if self.result_cursor.is_some() {
             list = list.push(
-                button("查看更多结果")
+                button(language.text("Load more results", "查看更多结果"))
                     .padding(10)
                     .style(quiet_button)
                     .on_press(Message::MoreResults),
@@ -1651,11 +1850,15 @@ impl App {
         let before = observed_capacity(result.get("space_before"), root);
         let after = observed_capacity(result.get("space_after"), root);
         let observation = match (before, after) {
-            (Some(a), Some(b)) => format!("磁盘可用容量：{} → {}（系统观测）", bytes(a), bytes(b)),
-            _ => "回收站操作不等于空间已释放；实际容量由系统重新观测。".into(),
+            (Some(a), Some(b)) => format!("{}: {} → {} ({})", language.text("Available disk space", "磁盘可用容量"), bytes(a), bytes(b), language.text("system measurement", "系统观测")),
+            _ => language.text("Moving items to trash may retain their disk space. The system measures available capacity again.", "回收站操作不等于空间已释放；实际容量由系统重新观测。").into(),
         };
         let heading = row![
-            text("清理作业结果").size(if compact { 19 } else { 24 }),
+            text(language.text("Cleanup results", "清理作业结果")).size(if compact {
+                19
+            } else {
+                24
+            }),
             Space::new().width(Length::Fill),
             button("×")
                 .style(quiet_button)
@@ -1664,9 +1867,12 @@ impl App {
         .align_y(Alignment::Center);
         let content = column![
             text(format!(
-                "当前已载入 {} 项结果，{} 项已完成。每项状态由本地服务记录。",
+                "{} {} · {} {} {}",
                 self.result_items.len(),
-                succeeded
+                language.text("results loaded", "项结果已载入"),
+                succeeded,
+                language.text("completed.", "项已完成。"),
+                language.text("Each item status is recorded by the local service.", "每项状态由本地服务记录。")
             ))
             .size(13)
             .color(MUTED),
@@ -1678,9 +1884,9 @@ impl App {
                     .as_ref()
                     .is_some_and(|job| matches!(job.work, Work::Refresh))
                 {
-                    "正在重新扫描原位置，完成后会切换到新快照。"
+                    language.text("Rescanning the original location. The new snapshot opens when it is ready.", "正在重新扫描原位置，完成后会切换到新快照。")
                 } else {
-                    "原快照保持不变；请以重新扫描的结果查看当前文件状态。"
+                    language.text("The original snapshot is kept. Rescan to view the current file state.", "原快照保持不变；请以重新扫描的结果查看当前文件状态。")
                 }
             )
             .size(11)
@@ -1690,7 +1896,7 @@ impl App {
         let body = column![
             heading,
             scroll_area::vertical(content).height(Length::Fill),
-            button(text("返回空间分析").size(13))
+            button(text(language.text("Back to space analysis", "返回空间分析")).size(13))
                 .padding([12, 20])
                 .style(accent_button)
                 .on_press(Message::DismissResults),
@@ -1702,6 +1908,17 @@ impl App {
             .height(dimensions.height)
             .style(|_| rounded_style(PANEL, 20.0))
             .into()
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        if !self.preference_writer.has_unsaved() {
+            return;
+        }
+        if let Err(error) = self.preference_writer.flush() {
+            eprintln!("Could not save language preference on exit: {error}");
+        }
     }
 }
 
@@ -1717,7 +1934,7 @@ fn require_occupancy_backend(capabilities: &Value) -> Result<(), String> {
     {
         Ok(())
     } else {
-        Err("连接的是旧后台服务，暂不支持占用测量。请在当前作业结束后退出旧版 GUI 和 MCP 客户端，等待后台空闲退出，再点「重新连接」。".into())
+        Err("The connected background service is outdated and does not support occupancy measurement. After current jobs finish, close older GUI and MCP clients, wait for the idle service to exit, then reconnect.".into())
     }
 }
 
@@ -1729,7 +1946,7 @@ mod backend_tests {
         assert!(
             require_occupancy_backend(&json!({"size_metrics":["logical","allocated"]}))
                 .unwrap_err()
-                .contains("旧后台服务")
+                .contains("background service is outdated")
         );
         assert!(require_occupancy_backend(&json!({})).is_err());
         assert!(
@@ -1741,11 +1958,255 @@ mod backend_tests {
     }
 }
 
-fn source_hint(source: &Volume) -> Option<&'static str> {
+#[cfg(test)]
+mod language_tests {
+    use super::*;
+
+    struct Fixture {
+        // Fields drop in order: flush App before removing its data directory.
+        app: App,
+        _data_dir: tempfile::TempDir,
+    }
+
+    impl std::ops::Deref for Fixture {
+        type Target = App;
+
+        fn deref(&self) -> &Self::Target {
+            &self.app
+        }
+    }
+
+    impl std::ops::DerefMut for Fixture {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.app
+        }
+    }
+
+    fn app() -> Fixture {
+        // Do not inherit preferences from the developer's actual data directory.
+        let data_dir = tempfile::tempdir().unwrap();
+        Fixture {
+            app: App::new(data_dir.path().join("state")).0,
+            _data_dir: data_dir,
+        }
+    }
+
+    fn node() -> Node {
+        Node {
+            id: "target".into(),
+            parent_id: Some("root".into()),
+            name: "目标.txt".into(),
+            path: ohmydisk_core::model::NativePath::new(std::path::Path::new("/tmp/目标.txt")),
+            kind: NodeKind::File,
+            logical_bytes: 42,
+            allocated_bytes: Some(4096),
+            space_usage: None,
+            modified_ns: None,
+            identity: "identity".into(),
+            volume_id: "volume".into(),
+            link_count: 1,
+            complete: true,
+            is_link_or_reparse: false,
+        }
+    }
+
+    fn plan() -> ReviewPlan {
+        ReviewPlan {
+            id: "plan".into(),
+            hash: "hash".into(),
+            mode: CleanupMode::Permanent,
+            bytes: 42,
+            expires_at: ohmydisk_core::now_ms() + 60_000,
+            targets: vec![node()],
+            manifest: vec![json!({"name":"目标.txt"})],
+            next_cursor: None,
+        }
+    }
+
+    #[test]
+    fn missing_preferences_start_in_english() {
+        let app = app();
+        assert_eq!(app.language, Language::English);
+        assert!(app.banner.is_none());
+        assert_eq!(app.language.tagline(), "Space, made clear");
+        assert_eq!(job_label(&Work::Scan, app.language), "Scanning");
+    }
+
+    #[test]
+    fn switching_language_preserves_work_and_retranslates_stored_copy() {
+        let mut app = app();
+        app.scan = Some(
+            serde_json::from_value(json!({
+                "scan_id":"scan",
+                "root_id":"root",
+                "root_path":ohmydisk_core::model::NativePath::new(std::path::Path::new("/tmp")),
+                "complete":true
+            }))
+            .unwrap(),
+        );
+        let location = Location {
+            id: "root".into(),
+            name: "tmp".into(),
+            path: "/tmp".into(),
+            bytes: Some(42),
+            measurement_partial: false,
+        };
+        app.location = Some(location.clone());
+        app.breadcrumbs = vec![location.clone()];
+        app.history = vec![location];
+        app.collection = vec![node()];
+        app.draft_scan_id = Some("scan".into());
+        app.review = Some(plan());
+        app.confirm_text = "DELETE".into();
+        app.active = Some(ActiveJob {
+            id: "job".into(),
+            work: Work::Scan,
+            state: "running".into(),
+            progress: LocalizedText::new("Scanning · 2 files", "扫描中 · 2 个文件"),
+            clock: scan_clock::Clock::default(),
+        });
+        app.result = Some(json!({"job_id":"previous-job"}));
+        app.banner = Some(LocalizedText::new("Ready to review", "可以核对"));
+        let drag_generation = app.collector_interaction.generation();
+
+        let _ = app.update(Message::SetLanguage(Language::Chinese));
+
+        assert_eq!(app.language, Language::Chinese);
+        assert_eq!(app.scan.as_ref().unwrap().scan_id, "scan");
+        assert_eq!(app.location.as_ref().unwrap().id, "root");
+        assert_eq!(app.breadcrumbs[0].id, "root");
+        assert_eq!(app.history[0].id, "root");
+        assert_eq!(app.collection[0].name, "目标.txt");
+        assert_eq!(app.draft_scan_id.as_deref(), Some("scan"));
+        assert_eq!(app.review.as_ref().unwrap().hash, "hash");
+        assert!(app.confirm_text.is_empty());
+        assert_eq!(app.active.as_ref().unwrap().id, "job");
+        assert_eq!(
+            app.active.as_ref().unwrap().progress.get(app.language),
+            "扫描中 · 2 个文件"
+        );
+        assert_eq!(app.banner.as_ref().unwrap().get(app.language), "可以核对");
+        assert_eq!(app.result.as_ref().unwrap()["job_id"], "previous-job");
+        assert!(app.collector_interaction.generation() > drag_generation);
+
+        let _ = app.update(Message::SetLanguage(Language::English));
+        assert_eq!(
+            app.active.as_ref().unwrap().progress.get(app.language),
+            "Scanning · 2 files"
+        );
+        assert_eq!(
+            app.banner.as_ref().unwrap().get(app.language),
+            "Ready to review"
+        );
+    }
+
+    #[test]
+    fn rapid_toggles_serialize_writes_and_ignore_stale_completions() {
+        let mut app = app();
+        let _ = app.update(Message::SetLanguage(Language::Chinese));
+        assert_eq!(app.language_save_in_flight, Some(1));
+        let _ = app.update(Message::SetLanguage(Language::English));
+        let _ = app.update(Message::SetLanguage(Language::Chinese));
+        assert_eq!(app.language_generation, 3);
+        assert_eq!(app.language_save_in_flight, Some(1));
+
+        // The first completion starts only the latest desired preference.
+        let _ = app.update(Message::LanguageSaved {
+            generation: 1,
+            result: Err("earlier write failed".into()),
+        });
+        assert_eq!(app.language_save_in_flight, Some(3));
+        assert!(app.banner.is_none());
+        let _ = app.update(Message::LanguageSaved {
+            generation: 1,
+            result: Err("stale completion".into()),
+        });
+        assert_eq!(app.language_save_in_flight, Some(3));
+        assert!(app.banner.is_none());
+        let _ = app.update(Message::LanguageSaved {
+            generation: 3,
+            result: Ok(()),
+        });
+        assert_eq!(app.language_save_in_flight, None);
+        assert_eq!(app.language, Language::Chinese);
+    }
+
+    #[test]
+    fn normal_close_flushes_latest_selection_without_gui_completion() {
+        let temporary = tempfile::tempdir().unwrap();
+        let data_dir = temporary.path().join("state");
+        let mut app = App::new(data_dir.clone()).0;
+        // Dropping these tasks leaves every GUI completion undelivered.
+        let _ = app.update(Message::SetLanguage(Language::Chinese));
+        let _ = app.update(Message::SetLanguage(Language::English));
+        let _ = app.update(Message::SetLanguage(Language::Chinese));
+        assert_eq!(app.language_save_in_flight, Some(1));
+        drop(app);
+
+        assert_eq!(preferences::load(&data_dir).unwrap(), Language::Chinese);
+        let restarted = App::new(data_dir).0;
+        assert_eq!(restarted.language, Language::Chinese);
+    }
+
+    #[test]
+    fn save_failure_keeps_language_and_reports_in_the_current_language() {
+        let mut app = app();
+        let _ = app.update(Message::SetLanguage(Language::Chinese));
+        let _ = app.update(Message::LanguageSaved {
+            generation: 1,
+            result: Err("permission denied".into()),
+        });
+        assert_eq!(app.language, Language::Chinese);
+        assert!(
+            app.banner
+                .as_ref()
+                .unwrap()
+                .get(app.language)
+                .contains("未能保存偏好")
+        );
+        assert!(
+            app.banner
+                .as_ref()
+                .unwrap()
+                .get(Language::English)
+                .contains("could not be saved")
+        );
+    }
+
+    #[test]
+    fn permanent_cleanup_accepts_only_the_current_language_confirmation() {
+        let mut app = app();
+        app.review = Some(plan());
+        app.confirm_text = "永久删除".into();
+        let _ = app.update(Message::Execute);
+        assert!(!app.busy);
+        app.confirm_text = "DELETE".into();
+        let _ = app.update(Message::Execute);
+        assert!(app.busy);
+        app.busy = false;
+
+        let _ = app.update(Message::SetLanguage(Language::Chinese));
+        assert!(app.confirm_text.is_empty());
+        app.confirm_text = "DELETE".into();
+        let _ = app.update(Message::Execute);
+        assert!(!app.busy);
+        app.confirm_text = "永久删除".into();
+        let _ = app.update(Message::Execute);
+        assert!(app.busy);
+    }
+}
+
+fn source_hint(source: &Volume, language: Language) -> Option<&'static str> {
     if cfg!(target_os = "macos") {
         match source.mount_path.display.as_str() {
-            "/" => Some("系统入口 · 包含数据目录的映射"),
-            "/System/Volumes/Data" => Some("数据入口 · 用户文件与应用数据"),
+            "/" => Some(language.text(
+                "System entry · includes mapped data folders",
+                "系统入口 · 包含数据目录的映射",
+            )),
+            "/System/Volumes/Data" => Some(language.text(
+                "Data entry · user files and application data",
+                "数据入口 · 用户文件与应用数据",
+            )),
             _ => None,
         }
     } else {
@@ -1764,7 +2225,7 @@ fn clock_for_scan(scan: &ScanSummary) -> scan_clock::Clock {
     clock
 }
 
-fn scan_time_summary(scan: &ScanSummary) -> String {
+fn scan_time_summary(scan: &ScanSummary, language: Language) -> String {
     let running = matches!(
         scan.state.as_deref(),
         Some("queued" | "running" | "cancel_requested")
@@ -1772,31 +2233,47 @@ fn scan_time_summary(scan: &ScanSummary) -> String {
     match scan.elapsed_ms {
         Some(elapsed) => format!(
             "{} {}",
-            if running { "已用时" } else { "总耗时" },
-            scan_clock::format_duration(elapsed)
+            if running {
+                language.text("Elapsed", "已用时")
+            } else {
+                language.text("Total time", "总耗时")
+            },
+            scan_clock::format_duration(elapsed, language)
         ),
-        None if running => "正在计时".into(),
-        None => "总耗时未记录".into(),
+        None if running => language.text("Timing in progress", "正在计时").into(),
+        None => language
+            .text("Total time not recorded", "总耗时未记录")
+            .into(),
     }
 }
 
-fn scan_size_summary(scan: &ScanSummary) -> String {
+fn scan_size_summary(scan: &ScanSummary, language: Language) -> String {
     if scan.root_id.is_none() {
         return match scan.state.as_deref() {
-            Some("failed") => "扫描失败 · 未生成快照",
-            Some("cancelled") => "扫描已取消 · 未生成快照",
-            Some("interrupted") => "扫描已中断 · 未生成快照",
-            Some("queued" | "running" | "cancel_requested") => "扫描中 · 尚未生成快照",
-            _ => "尚未生成快照",
+            Some("failed") => {
+                language.text("Scan failed · no snapshot created", "扫描失败 · 未生成快照")
+            }
+            Some("cancelled") => language.text(
+                "Scan cancelled · no snapshot created",
+                "扫描已取消 · 未生成快照",
+            ),
+            Some("interrupted") => language.text(
+                "Scan interrupted · no snapshot created",
+                "扫描已中断 · 未生成快照",
+            ),
+            Some("queued" | "running" | "cancel_requested") => {
+                language.text("Scanning · no snapshot yet", "扫描中 · 尚未生成快照")
+            }
+            _ => language.text("No snapshot yet", "尚未生成快照"),
         }
         .into();
     }
     let state = if scan.known_stale {
-        "待刷新"
+        language.text("Refresh needed", "待刷新")
     } else if scan.complete {
-        "快照"
+        language.text("Snapshot", "快照")
     } else {
-        "部分结果"
+        language.text("Partial results", "部分结果")
     };
     match scan
         .space_accounting
@@ -1804,10 +2281,14 @@ fn scan_size_summary(scan: &ScanSummary) -> String {
         .and_then(Capacity::reconciled)
     {
         Some(space) => format!(
-            "已用 / 保留 {} · {state}",
+            "{} {} · {state}",
+            language.text("Used / reserved", "已用 / 保留"),
             bytes(space.total - space.available)
         ),
-        None => format!("需要重新测量占用 · {state}"),
+        None => format!(
+            "{} · {state}",
+            language.text("Occupancy must be measured again", "需要重新测量占用")
+        ),
     }
 }
 
@@ -1880,44 +2361,44 @@ fn node_covers(parent: &Node, child: &Node) -> bool {
 fn path_covers(parent: &str, child: &str) -> bool {
     std::path::Path::new(child).starts_with(std::path::Path::new(parent))
 }
-fn phase_label(phase: &str) -> &str {
+fn phase_label(phase: &str, language: Language) -> &str {
     match phase {
-        "scanning" | "enumerating" => "扫描中",
-        "preparing" => "核对清单",
-        "cleaning" | "executing" => "清理中",
-        "completed" => "已完成",
-        "saving" => "保存扫描结果",
-        "indexing" => "整理扫描结果",
-        "cancelled" => "已停止",
-        "queued" => "等待中",
+        "scanning" | "enumerating" => language.text("Scanning", "扫描中"),
+        "preparing" => language.text("Checking manifest", "核对清单"),
+        "cleaning" | "executing" => language.text("Cleaning", "清理中"),
+        "completed" => language.text("Completed", "已完成"),
+        "saving" => language.text("Saving scan results", "保存扫描结果"),
+        "indexing" => language.text("Indexing scan results", "整理扫描结果"),
+        "cancelled" => language.text("Stopped", "已停止"),
+        "queued" => language.text("Waiting", "等待中"),
         _ => {
             if phase.is_empty() {
-                "处理中"
+                language.text("Processing", "处理中")
             } else {
                 phase
             }
         }
     }
 }
-fn state_label(state: &str) -> &str {
+fn state_label(state: &str, language: Language) -> &str {
     match state {
-        "queued" => "等待中",
-        "running" => "进行中",
-        "cancel_requested" => "已请求停止",
-        "completed" => "已完成",
-        "completed_with_errors" => "完成，含问题",
-        "cancelled" => "已停止",
-        "failed" => "失败",
-        "interrupted" => "已中断",
+        "queued" => language.text("Waiting", "等待中"),
+        "running" => language.text("Running", "进行中"),
+        "cancel_requested" => language.text("Stop requested", "已请求停止"),
+        "completed" => language.text("Completed", "已完成"),
+        "completed_with_errors" => language.text("Completed with errors", "完成，含问题"),
+        "cancelled" => language.text("Stopped", "已停止"),
+        "failed" => language.text("Failed", "失败"),
+        "interrupted" => language.text("Interrupted", "已中断"),
         _ => state,
     }
 }
-fn job_label(work: &Work) -> &'static str {
+fn job_label(work: &Work, language: Language) -> &'static str {
     match work {
-        Work::Scan => "正在扫描",
-        Work::Prepare(_) => "正在准备清理计划",
-        Work::Cleanup => "正在执行清理",
-        Work::Refresh => "正在刷新扫描",
+        Work::Scan => language.text("Scanning", "正在扫描"),
+        Work::Prepare(_) => language.text("Preparing cleanup plan", "正在准备清理计划"),
+        Work::Cleanup => language.text("Running cleanup", "正在执行清理"),
+        Work::Refresh => language.text("Refreshing scan", "正在刷新扫描"),
     }
 }
 
