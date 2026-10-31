@@ -2009,8 +2009,8 @@ mod tests {
 
     #[test]
     fn source_row_keeps_previous_results_when_the_latest_retry_has_failed() {
-        let path = NativePath::new(std::path::Path::new("/tmp/source-row-fixture"));
-        let other = NativePath::new(std::path::Path::new("/tmp/source-row-other"));
+        let path = NativePath::new(&std::env::temp_dir().join("source-row-fixture"));
+        let other = NativePath::new(&std::env::temp_dir().join("source-row-other"));
         let scans = vec![
             source_summary("usable", &path, "completed", Some("root"), 10),
             source_summary("retry", &path, "failed", None, 20),
@@ -2032,7 +2032,7 @@ mod tests {
 
     #[test]
     fn unfinished_source_attempts_cannot_be_removed_and_never_invent_results() {
-        let path = NativePath::new(std::path::Path::new("/tmp/source-row-fixture"));
+        let path = NativePath::new(&std::env::temp_dir().join("source-row-fixture"));
         for state in ["queued", "running", "cancel_requested"] {
             let scans = vec![source_summary("pending", &path, state, None, 10)];
             let row = source_scan_state(&scans, &path);
