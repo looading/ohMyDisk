@@ -25,7 +25,8 @@ OhMyDisk 是用 Rust 和 iced 开发的本地磁盘空间分析工具，提供�
 - 各平台都可在顶栏切换 **English** 和 **中文**，macOS 也可使用应用菜单 **OhMyDisk → Language / 语言 → English / 中文**。首次启动默认英文，切换后立即生效，下次启动保留选择。
 - 从图表或目录列表拖入待清理集合，拖动分隔条调整收集区高度。
 - 先核对精确目标，再移入系统回收站；永久删除单独确认。
-- 查看和取消后台作业，重新打开历史扫描；关闭 GUI 后，仍可通过 stdio MCP 使用同一个本地服务。
+- 在同一个列表管理磁盘和自选文件夹：查看结果、重新扫描或移除自选入口。同一路径只保留一项，移除入口保留源文件。
+- 查看和取消后台作业；GUI 与 stdio MCP 共用同一个本地服务。
 
 容量视图将文件系统总容量、可用空间、已确认文件占用，以及共享、系统和未归属空间放在同一张图中。逻辑大小保留在详情和 API 中，稀疏文件或共享区块不会把图表总量撑到磁盘容量之外。无法测量的项目会明确标记为未知。
 
@@ -56,7 +57,7 @@ cargo run -p ohmydisk --release -- call get_capabilities
 cargo run -p ohmydisk --release -- --data-dir /absolute/path/to/test-state
 ```
 
-语言选择保存在 `<data-dir>/preferences.json`。切换后界面立即更新，下次启动继续使用所选语言。
+语言与文件夹列表配置保存在 `<data-dir>/preferences.json`。切换后界面立即更新，下次启动继续使用所选语言。
 
 ## Codex 与其他 MCP 客户端
 

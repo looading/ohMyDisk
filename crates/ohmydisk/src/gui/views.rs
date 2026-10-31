@@ -1,6 +1,7 @@
 //! Source overview and the focused capacity workspace share one navigation state.
 use super::*;
 use iced::widget::column;
+use ohmydisk_core::NativePath;
 
 const HEADER_HEIGHT: f32 = window_chrome::HEADER_HEIGHT;
 const COMPACT_WIDTH: f32 = 1000.0;
@@ -61,6 +62,103 @@ fn center_layout(size: iced::Size, amount: &str, label: &str) -> CenterLayout {
 }
 fn chrome_action(action: window_chrome::Action) -> Message {
     Message::WindowChrome(window_chrome::Message::Action(action))
+}
+
+/// A source keeps the latest attempt's status independently from the last
+/// usable result, so a failed retry cannot strand an earlier snapshot.
+#[derive(Clone, Copy, Debug)]
+struct SourceScanState<'a> {
+    attempt: Option<&'a ScanSummary>,
+    result: Option<&'a ScanSummary>,
+}
+
+impl SourceScanState<'_> {
+    fn previous_result(&self) -> bool {
+        self.attempt
+            .zip(self.result)
+            .is_some_and(|(attempt, result)| attempt.scan_id != result.scan_id)
+    }
+
+    fn result_label(&self, language: Language) -> &'static str {
+        if self.previous_result() {
+            language.text("Previous results", "上次结果")
+        } else {
+            language.text("View results", "查看结果")
+        }
+    }
+
+    fn failed(&self) -> bool {
+        self.attempt
+            .is_some_and(|scan| matches!(scan.state.as_deref(), Some("failed" | "interrupted")))
+    }
+
+    fn scanning(&self) -> bool {
+        self.attempt.is_some_and(|scan| {
+            matches!(
+                scan.state.as_deref(),
+                Some("queued" | "running" | "cancel_requested")
+            )
+        })
+    }
+
+    fn removal_allowed(&self, busy: bool, scanning: bool) -> bool {
+        !busy && !scanning && !self.scanning()
+    }
+}
+
+fn source_scan_state<'a>(scans: &'a [ScanSummary], path: &NativePath) -> SourceScanState<'a> {
+    SourceScanState {
+        attempt: source_catalog::latest(scans, path),
+        result: source_catalog::latest_viewable(scans, path),
+    }
+}
+
+fn source_attempt_status(scan: &ScanSummary, language: Language) -> String {
+    if scan.root_id.is_none() {
+        return scan_size_summary(scan, language);
+    }
+    if let Some(state) = scan.state.as_deref() {
+        if state != "completed" {
+            return state_label(state, language).into();
+        }
+    }
+    if scan.known_stale {
+        language.text("Refresh needed", "待刷新")
+    } else if scan.complete {
+        language.text("Completed", "已完成")
+    } else {
+        language.text("Partial results", "部分结果")
+    }
+    .into()
+}
+
+fn source_folder_usage(scan: Option<&ScanSummary>, language: Language) -> String {
+    let Some(scan) = scan else {
+        return language.text("No results yet", "暂无结果").into();
+    };
+    let Some(accounting) = scan.space_accounting.as_ref() else {
+        return language.text("Usage unmeasured", "占用未测量").into();
+    };
+    if accounting.measurement_status == "unavailable" {
+        return language.text("Usage unmeasured", "占用未测量").into();
+    }
+    if Capacity::reconciled(accounting).is_none() {
+        return language.text("Usage needs review", "占用待复核").into();
+    }
+    if accounting.measurement_status == "complete" {
+        format!(
+            "{} {}",
+            language.text("Attributed usage", "已归属占用"),
+            bytes(accounting.attributed_bytes),
+        )
+    } else {
+        format!(
+            "{} {} · {}",
+            language.text("At least", "至少"),
+            bytes(accounting.attributed_bytes),
+            language.text("attributed", "已归属占用"),
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -569,117 +667,20 @@ impl App {
         ]
         .spacing(14);
         for source in &self.sources {
-            let totals = source
-                .space_observation
-                .as_ref()
-                .filter(|observation| observation.capacity_scope != "caller_view")
-                .map(|observation| (observation.total_bytes, observation.available_bytes))
-                .unwrap_or((0, 0));
-            let valid = totals.0 > 0 && totals.1 <= totals.0;
-            let ratio = if valid {
-                (totals.0 - totals.1) as f32 / totals.0 as f32
-            } else {
-                0.0
-            };
-            let recent = self.scans.iter().find(|scan| {
-                scan.root_path.display == source.mount_path.display && scan.root_id.is_some()
-            });
-            let mut actions = Row::new().spacing(8).align_y(Alignment::Center);
-            if let Some(scan) = recent {
-                actions = actions.push(
-                    button(text(self.language.text("View results", "查看结果")).size(11))
-                        .padding([8, 12])
-                        .style(quiet_button)
-                        .on_press(Message::OpenScan(scan.scan_id.clone())),
-                );
-            }
-            actions = actions.push(
-                button(
-                    text(if recent.is_some() {
-                        self.language.text("Rescan", "重新扫描")
-                    } else {
-                        self.language.text("Scan", "扫描")
-                    })
-                    .size(12),
-                )
-                .padding([8, 16])
-                .style(accent_button)
-                .on_press_maybe(
-                    source
-                        .mount_path
-                        .to_path()
-                        .ok()
-                        .filter(|_| self.active.is_none() && !self.busy)
-                        .map(Message::StartScan),
-                ),
-            );
-            let info = column![
-                text(crop(&source.name, if compact { 30 } else { 42 }))
-                    .size(15)
-                    .width(Length::Fill),
-                text(crop(
-                    &source.mount_path.display,
-                    if compact { 52 } else { 75 }
-                ))
-                .size(10)
-                .color(MUTED)
-                .width(Length::Fill)
-            ]
-            .spacing(6)
-            .width(Length::Fill);
-            let mut usage = column![
-                text(if valid {
-                    format!(
-                        "{} {} · {} {}",
-                        bytes(totals.1),
-                        self.language.text("available", "可用"),
-                        bytes(totals.0),
-                        self.language.text("total", "总容量")
-                    )
-                } else {
-                    self.language
-                        .text("Capacity observation unavailable", "容量观测暂不可用")
-                        .into()
-                })
-                .size(11)
-                .color(MUTED)
-            ]
-            .spacing(8);
-            if valid {
-                usage = usage.push(iced::widget::progress_bar(0.0..=1.0, ratio).girth(5));
-            }
-            let card: Element<'_, Message> = if compact {
-                column![
-                    row![text("▣").size(24).color(GREEN), info]
-                        .spacing(12)
-                        .align_y(Alignment::Center),
-                    usage.width(Length::Fill),
-                    row![Space::new().width(Length::Fill), actions]
-                ]
-                .spacing(12)
-                .into()
-            } else {
-                row![
-                    text("▣").size(26).color(GREEN),
-                    info,
-                    usage.width(260),
-                    actions
-                ]
-                .spacing(22)
-                .align_y(Alignment::Center)
-                .into()
-            };
-            disks = disks.push(
-                container(card)
-                    .padding(if compact { 16 } else { 20 })
-                    .width(Length::Fill)
-                    .style(|_| rounded_style(CARD, 12.0)),
-            );
+            disks = disks.push(self.source_card(&source.mount_path, Some(source)));
             if let Some(hint) = source_hint(source, self.language) {
                 disks = disks.push(text(hint).size(10).color(MUTED).width(Length::Fill));
             }
         }
-        if self.sources.is_empty() {
+        for path in self.catalog.folders().iter().filter(|path| {
+            !self
+                .sources
+                .iter()
+                .any(|source| source_catalog::path_equal(&source.mount_path, path))
+        }) {
+            disks = disks.push(self.source_card(path, None));
+        }
+        if self.sources.is_empty() && self.catalog.folders().is_empty() {
             disks = disks.push(
                 text(if self.connecting {
                     self.language.text("Discovering disks…", "正在发现磁盘…")
@@ -700,10 +701,13 @@ impl App {
                 .any(|source| source.mount_path.display == "/System/Volumes/Data")
         {
             disks = disks.push(
-                text(self.language.text("APFS system and data volumes may share a container. Their capacities cannot be added together.", "APFS 系统入口与数据入口可能共享同一容器，容量不能相加。"))
-                    .size(11)
-                    .color(MUTED)
-                    .width(Length::Fill),
+                text(self.language.text(
+                    "APFS system and data volumes may share a container. Their capacities cannot be added together.",
+                    "APFS 系统入口与数据入口可能共享同一容器，容量不能相加。",
+                ))
+                .size(11)
+                .color(MUTED)
+                .width(Length::Fill),
             );
         }
         if self.client.is_none() && !self.connecting {
@@ -714,67 +718,6 @@ impl App {
                     .on_press(Message::Retry),
             );
         }
-        disks = disks.push(Space::new().height(8)).push(row![
-            text(self.language.text("Saved scans", "已保存的扫描")).size(15),
-            Space::new().width(Length::Fill),
-            text(self.scans.len().to_string()).size(11).color(MUTED)
-        ]);
-        for scan in &self.scans {
-            let info = column![
-                text(crop(&scan.root_path.display, if compact { 55 } else { 92 }))
-                    .size(12)
-                    .width(Length::Fill),
-                text(if compact {
-                    format!(
-                        "{} · {}",
-                        scan_size_summary(scan, self.language),
-                        self.scan_time_label(scan)
-                    )
-                } else {
-                    format!(
-                        "{} · {} · {}",
-                        scan_size_summary(scan, self.language),
-                        self.scan_time_label(scan),
-                        timestamp(scan.created_at)
-                    )
-                })
-                .size(10)
-                .color(MUTED)
-                .width(Length::Fill)
-            ]
-            .spacing(6);
-            disks = disks.push(
-                row![
-                    button(info)
-                        .width(Length::Fill)
-                        .padding([11, 10])
-                        .style(quiet_button)
-                        .on_press(Message::OpenScan(scan.scan_id.clone())),
-                    button(
-                        text(if compact {
-                            "×"
-                        } else {
-                            self.language.text("Close record", "关闭记录")
-                        })
-                        .size(11)
-                    )
-                    .padding(9)
-                    .style(quiet_button)
-                    .on_press(Message::CloseScan(scan.scan_id.clone()))
-                ]
-                .align_y(Alignment::Center),
-            );
-        }
-        if self.scans.is_empty() {
-            disks = disks.push(
-                text(self.language.text(
-                    "Completed scans can be reopened here.",
-                    "扫描完成后，可在这里重新打开结果。",
-                ))
-                .size(12)
-                .color(MUTED),
-            );
-        }
         let mut content = column![scroll_area::vertical(disks).height(Length::Fill)]
             .spacing(12)
             .padding(if compact { 16 } else { 28 })
@@ -783,6 +726,204 @@ impl App {
             content = content.push(self.job_strip());
         }
         content.into()
+    }
+    fn source_card<'a>(
+        &'a self,
+        path: &'a NativePath,
+        volume: Option<&'a Volume>,
+    ) -> Element<'a, Message> {
+        let compact = self.compact_layout();
+        let scans = source_scan_state(&self.scans, path);
+        let source_scanning = self.source_scanning(path);
+        let mut actions = Row::new().spacing(8).align_y(Alignment::Center);
+        if let Some(scan) = scans.result {
+            actions = actions.push(
+                button(text(scans.result_label(self.language)).size(11))
+                    .padding([8, 12])
+                    .style(quiet_button)
+                    .on_press(Message::OpenScan(scan.scan_id.clone())),
+            );
+        }
+        actions = actions.push(
+            button(
+                text(if scans.attempt.is_some() {
+                    self.language.text("Rescan", "重新扫描")
+                } else {
+                    self.language.text("Scan", "扫描")
+                })
+                .size(12),
+            )
+            .padding([8, 16])
+            .style(accent_button)
+            .on_press_maybe(
+                path.to_path()
+                    .ok()
+                    .filter(|_| {
+                        self.client.is_some()
+                            && self.active.is_none()
+                            && !self.busy
+                            && !source_scanning
+                            && !scans.scanning()
+                    })
+                    .map(Message::StartScan),
+            ),
+        );
+        if volume.is_none() {
+            actions = actions.push(
+                button(text(self.language.text("Remove", "移除")).size(11))
+                    .padding([8, 10])
+                    .style(quiet_button)
+                    .on_press_maybe(
+                        scans
+                            .removal_allowed(self.busy, source_scanning)
+                            .then(|| Message::RemoveFolder(path.clone())),
+                    ),
+            );
+        }
+        let name = volume.map(|source| source.name.clone()).unwrap_or_else(|| {
+            path.to_path()
+                .ok()
+                .and_then(|path| {
+                    path.file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                })
+                .unwrap_or_else(|| path.display.clone())
+        });
+        let mut info = column![
+            text(crop(&name, if compact { 30 } else { 42 }))
+                .size(15)
+                .color(WHITE)
+                .width(Length::Fill),
+            text(crop(&path.display, if compact { 52 } else { 75 }))
+                .size(10)
+                .color(MUTED)
+                .width(Length::Fill)
+        ]
+        .spacing(6)
+        .width(Length::Fill);
+        if source_scanning && !scans.scanning() {
+            info = info.push(
+                text(self.language.text("Starting scan…", "正在开始扫描…"))
+                    .size(10)
+                    .color(MUTED),
+            );
+        } else if let Some(scan) = scans.attempt {
+            let summary = if compact {
+                format!(
+                    "{} · {}",
+                    source_attempt_status(scan, self.language),
+                    self.scan_time_label(scan),
+                )
+            } else {
+                format!(
+                    "{} · {} · {}",
+                    source_attempt_status(scan, self.language),
+                    self.scan_time_label(scan),
+                    timestamp(scan.created_at),
+                )
+            };
+            info = info.push(
+                text(summary)
+                    .size(10)
+                    .color(if scans.failed() { WARNING } else { MUTED })
+                    .width(Length::Fill),
+            );
+        } else {
+            info = info.push(
+                text(self.language.text("Not scanned", "尚未扫描"))
+                    .size(10)
+                    .color(MUTED),
+            );
+        }
+        let mut usage = Column::new().spacing(8);
+        if let Some(source) = volume {
+            let totals = source
+                .space_observation
+                .as_ref()
+                .filter(|observation| observation.capacity_scope != "caller_view")
+                .map(|observation| (observation.total_bytes, observation.available_bytes))
+                .unwrap_or((0, 0));
+            let valid = totals.0 > 0 && totals.1 <= totals.0;
+            usage = usage.push(
+                text(if valid {
+                    format!(
+                        "{} {} · {} {}",
+                        bytes(totals.1),
+                        self.language.text("available", "可用"),
+                        bytes(totals.0),
+                        self.language.text("total", "总容量"),
+                    )
+                } else {
+                    self.language
+                        .text("Capacity observation unavailable", "容量观测暂不可用")
+                        .into()
+                })
+                .size(11)
+                .color(MUTED)
+                .width(Length::Fill),
+            );
+            if valid {
+                let ratio = (totals.0 - totals.1) as f32 / totals.0 as f32;
+                usage = usage.push(iced::widget::progress_bar(0.0..=1.0, ratio).girth(5));
+            }
+        } else {
+            if scans.previous_result() {
+                usage = usage.push(
+                    text(scans.result_label(self.language))
+                        .size(10)
+                        .color(MUTED),
+                );
+            }
+            usage = usage.push(
+                text(source_folder_usage(scans.result, self.language))
+                    .size(11)
+                    .color(MUTED)
+                    .width(Length::Fill),
+            );
+        }
+        let icon = text(if volume.is_some() { "▣" } else { "▤" })
+            .size(if compact { 24 } else { 26 })
+            .color(GREEN);
+        let details: Element<'a, Message> = if compact {
+            column![
+                row![icon, info].spacing(12).align_y(Alignment::Center),
+                usage.width(Length::Fill),
+            ]
+            .spacing(12)
+            .width(Length::Fill)
+            .into()
+        } else {
+            row![icon, info, usage.width(260)]
+                .spacing(22)
+                .align_y(Alignment::Center)
+                .width(Length::Fill)
+                .into()
+        };
+        let details: Element<'a, Message> = if let Some(scan) = scans.result {
+            button(details)
+                .width(Length::Fill)
+                .padding(0)
+                .style(quiet_button)
+                .on_press(Message::OpenScan(scan.scan_id.clone()))
+                .into()
+        } else {
+            details
+        };
+        let card: Element<'a, Message> = if compact {
+            column![details, row![Space::new().width(Length::Fill), actions]]
+                .spacing(12)
+                .into()
+        } else {
+            row![details, actions]
+                .spacing(22)
+                .align_y(Alignment::Center)
+                .into()
+        };
+        container(card)
+            .padding(if compact { 16 } else { 20 })
+            .width(Length::Fill)
+            .style(|_| rounded_style(CARD, 12.0))
+            .into()
     }
     pub(super) fn navigation(&self) -> Element<'_, Message> {
         let compact = self.compact_layout();
@@ -1846,6 +1987,112 @@ fn space_description(target: &sunburst::Target, language: Language) -> &'static 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn source_summary(
+        id: &str,
+        path: &NativePath,
+        state: &str,
+        root_id: Option<&str>,
+        created_at: u64,
+    ) -> ScanSummary {
+        serde_json::from_value(json!({
+            "scan_id": id,
+            "root_path": path,
+            "root_id": root_id,
+            "state": state,
+            "complete": state == "completed",
+            "created_at": created_at,
+            "elapsed_ms": 1_000,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn source_row_keeps_previous_results_when_the_latest_retry_has_failed() {
+        let path = NativePath::new(std::path::Path::new("/tmp/source-row-fixture"));
+        let other = NativePath::new(std::path::Path::new("/tmp/source-row-other"));
+        let scans = vec![
+            source_summary("usable", &path, "completed", Some("root"), 10),
+            source_summary("retry", &path, "failed", None, 20),
+            source_summary("unrelated", &other, "completed", Some("root"), 30),
+        ];
+        let row = source_scan_state(&scans, &path);
+        assert_eq!(row.attempt.unwrap().scan_id, "retry");
+        assert_eq!(row.result.unwrap().scan_id, "usable");
+        assert!(row.failed());
+        assert!(row.previous_result());
+        assert_eq!(row.result_label(Language::English), "Previous results");
+        assert_eq!(row.result_label(Language::Chinese), "上次结果");
+        assert!(source_attempt_status(row.attempt.unwrap(), Language::English).contains("failed"));
+        assert!(source_attempt_status(row.attempt.unwrap(), Language::Chinese).contains("失败"));
+        assert!(row.removal_allowed(false, false));
+        assert!(!row.removal_allowed(true, false));
+        assert!(!row.removal_allowed(false, true));
+    }
+
+    #[test]
+    fn unfinished_source_attempts_cannot_be_removed_and_never_invent_results() {
+        let path = NativePath::new(std::path::Path::new("/tmp/source-row-fixture"));
+        for state in ["queued", "running", "cancel_requested"] {
+            let scans = vec![source_summary("pending", &path, state, None, 10)];
+            let row = source_scan_state(&scans, &path);
+            assert!(row.result.is_none());
+            assert!(!row.removal_allowed(false, false));
+        }
+        for state in ["failed", "cancelled", "interrupted"] {
+            let scans = vec![source_summary("attempt", &path, state, None, 10)];
+            let row = source_scan_state(&scans, &path);
+            assert!(row.result.is_none());
+            assert!(!row.previous_result());
+            assert!(row.removal_allowed(false, false));
+        }
+        let row = source_scan_state(&[], &path);
+        assert!(row.attempt.is_none());
+        assert!(row.result.is_none());
+        assert!(row.removal_allowed(false, false));
+    }
+
+    #[test]
+    fn folder_source_usage_is_attributed_usage_instead_of_the_volumes_used_space() {
+        let app = measured_app("/tmp/source-row-fixture", "complete");
+        let mut scan = app.scan.as_ref().unwrap().clone();
+        assert_eq!(
+            source_folder_usage(Some(&scan), Language::English),
+            "Attributed usage 8.8 MB"
+        );
+        assert_eq!(
+            source_folder_usage(Some(&scan), Language::Chinese),
+            "已归属占用 8.8 MB"
+        );
+        scan.space_accounting.as_mut().unwrap().measurement_status = "partial".into();
+        assert_eq!(
+            source_folder_usage(Some(&scan), Language::English),
+            "At least 8.8 MB · attributed"
+        );
+        scan.space_accounting.as_mut().unwrap().measurement_status = "unavailable".into();
+        assert_eq!(
+            source_folder_usage(Some(&scan), Language::English),
+            "Usage unmeasured"
+        );
+        scan.space_accounting.as_mut().unwrap().measurement_status = "complete".into();
+        scan.space_accounting
+            .as_mut()
+            .unwrap()
+            .reconciliation_status = "inconsistent".into();
+        assert_eq!(
+            source_folder_usage(Some(&scan), Language::English),
+            "Usage needs review"
+        );
+        scan.space_accounting = None;
+        assert_eq!(
+            source_folder_usage(Some(&scan), Language::Chinese),
+            "占用未测量"
+        );
+        assert_eq!(
+            source_folder_usage(None, Language::English),
+            "No results yet"
+        );
+    }
 
     #[test]
     fn saved_duration_survives_summary_roundtrip_without_inventing_legacy_totals() {

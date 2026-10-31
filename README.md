@@ -25,7 +25,8 @@ Extract the archive, then open `OhMyDisk.app` on macOS or `ohmydisk.exe` on Wind
 - Switch between **English** and **中文** in the top bar on all platforms, or through the macOS app menu **OhMyDisk → Language / 语言 → English / 中文**. English is the default; changes apply immediately and are saved for the next launch.
 - Drag chart segments or directory rows into the collection, then resize the collection to review more items.
 - Review exact cleanup targets before moving them to the system trash. Permanent deletion is a separate, explicitly confirmed action.
-- Track and cancel background jobs, reopen saved scans, and use the same local service through stdio MCP while the GUI is closed.
+- Manage disks and chosen folders in one list: view results, rescan, or remove a custom entry. Repeated folder paths share one entry; removing an entry keeps its files.
+- Track and cancel background jobs. GUI and stdio MCP share the same local service.
 
 The capacity view accounts for filesystem capacity as available space, confirmed file usage, and shared/system/unattributed space. Logical file sizes remain available in details and the API; sparse files and shared blocks do not inflate the chart beyond disk capacity. Unknown measurements stay marked as unknown.
 
@@ -56,7 +57,7 @@ State is stored in the current user's local application-data directory. Use `--d
 cargo run -p ohmydisk --release -- --data-dir /absolute/path/to/test-state
 ```
 
-The language setting is saved in `<data-dir>/preferences.json`. Switching languages updates the running app immediately and applies again on the next launch.
+Language and folder-list settings are saved in `<data-dir>/preferences.json`. Switching languages updates the running app immediately and applies again on the next launch.
 
 ## Codex and other MCP clients
 

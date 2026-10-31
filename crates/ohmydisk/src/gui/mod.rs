@@ -6,6 +6,7 @@ mod locale;
 mod preferences;
 mod scan_clock;
 mod scroll_area;
+mod source_catalog;
 mod space_view;
 mod sunburst;
 mod views;
@@ -28,7 +29,7 @@ use iced::{
     Alignment, Background, Border, Color, Element, Font, Length, Subscription, Task, Theme,
 };
 use ohmydisk_core::model::{
-    CleanupMode, ItemResult, ItemStatus, Job, Node, NodeKind, Volume, new_id,
+    AppError, CleanupMode, ItemResult, ItemStatus, Job, NativePath, Node, NodeKind, Volume, new_id,
 };
 use ohmydisk_core::{SpaceAccounting, SpaceObservation};
 use ohmydisk_service::ipc::Client;
@@ -139,8 +140,9 @@ struct Preview {
 
 #[derive(Clone, Debug)]
 enum Response {
-    Sources,
-    Scans,
+    Scans {
+        epoch: u64,
+    },
     StartedScan,
     Poll {
         id: String,
@@ -170,7 +172,6 @@ enum Response {
     },
     Cancel,
     Reveal,
-    Release(String),
 }
 
 #[derive(Clone, Debug)]
@@ -230,6 +231,8 @@ enum Message {
     PreviewPane(bool),
     PickFolder,
     FolderPicked(Option<PathBuf>),
+    FolderNormalized(Result<NativePath, String>),
+    RemoveFolder(NativePath),
     StartScan(PathBuf),
     OpenScan(String),
     Navigate(String),
@@ -263,7 +266,6 @@ enum Message {
     Tick,
     ClearBanner,
     Retry,
-    CloseScan(String),
 }
 impl std::fmt::Debug for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -277,6 +279,10 @@ struct App {
     language_generation: u64,
     language_save_in_flight: Option<u64>,
     preference_writer: preferences::Writer,
+    catalog: source_catalog::Catalog,
+    catalog_epoch: u64,
+    pending_scan_root: Option<NativePath>,
+    scan_return_root: Option<NativePath>,
     chrome: window_chrome::State,
     compact_preview: bool,
     collector_interaction: interaction::Controller,
@@ -324,7 +330,7 @@ struct App {
 
 impl App {
     fn new(data_dir: PathBuf) -> (Self, Task<Message>) {
-        let (language, banner) = match preferences::load(&data_dir) {
+        let (language, mut banner) = match preferences::load(&data_dir) {
             Ok(language) => (language, None),
             Err(error) => (
                 Language::default(),
@@ -334,22 +340,57 @@ impl App {
                 )),
             ),
         };
+        let folders = match preferences::load_folders(&data_dir) {
+            Ok(folders) => folders,
+            Err(error) => {
+                if banner.is_none() {
+                    banner = Some(LocalizedText::new(
+                        format!("Could not load saved folders. {error}"),
+                        format!("无法读取已添加的文件夹。{error}"),
+                    ));
+                }
+                preferences::FolderSettings::default()
+            }
+        };
         let app_menu = app_menu::Bridge::new(language);
         let preference_writer = preferences::Writer::new(data_dir.clone(), language);
+        let catalog = source_catalog::Catalog::new(folders);
+        preference_writer.set_folders(catalog.settings());
+        let initial_save = preference_writer.has_unsaved();
+        let writer = preference_writer.clone();
         let task = Task::batch([
             Self::connect(data_dir.clone()),
             window_chrome::State::initial_task().map(Message::WindowChrome),
             app_menu
                 .synchronize(preference_writer.clone())
                 .map(|()| Message::MenuUpdated),
+            if initial_save {
+                Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || writer.flush())
+                            .await
+                            .map_err(|error| format!("Preference save task failed: {error}"))?
+                    },
+                    |result| Message::LanguageSaved {
+                        generation: 0,
+                        result,
+                    },
+                )
+            } else {
+                Task::none()
+            },
         ]);
         (
             Self {
                 language,
                 app_menu,
                 language_generation: 0,
-                language_save_in_flight: None,
+                language_save_in_flight: initial_save.then_some(0),
                 preference_writer,
+                catalog,
+                catalog_epoch: 0,
+                pending_scan_root: None,
+                scan_return_root: None,
                 chrome: window_chrome::State::default(),
                 compact_preview: false,
                 collector_interaction: interaction::Controller::default(),
@@ -425,9 +466,60 @@ impl App {
             async move {
                 tokio::task::spawn_blocking(move || writer.flush())
                     .await
-                    .map_err(|error| format!("Language preference task failed: {error}"))?
+                    .map_err(|error| format!("Preference save task failed: {error}"))?
             },
             move |result| Message::LanguageSaved { generation, result },
+        )
+    }
+    fn persist_catalog(&mut self) -> Task<Message> {
+        self.preference_writer.set_folders(self.catalog.settings());
+        self.language_generation += 1;
+        if self.language_save_in_flight.is_none() {
+            self.save_language()
+        } else {
+            Task::none()
+        }
+    }
+
+    fn source_scanning(&self, path: &NativePath) -> bool {
+        self.pending_scan_root
+            .as_ref()
+            .is_some_and(|root| source_catalog::path_equal(root, path))
+            || self.scans.iter().any(|scan| {
+                source_catalog::path_equal(&scan.root_path, path)
+                    && matches!(
+                        scan.state.as_deref(),
+                        Some("queued" | "running" | "cancel_requested")
+                    )
+            })
+    }
+
+    fn start_scan(&mut self, root: NativePath) -> Task<Message> {
+        if self.review.is_some() || self.result.is_some() {
+            self.banner = Some(LocalizedText::new(
+                "Close the cleanup review or results before starting a scan.",
+                "请先关闭清理确认或结果窗口，再开始扫描。",
+            ));
+            return Task::none();
+        }
+        if self.active.is_some() || self.busy {
+            self.banner = Some(LocalizedText::new(
+                "Wait for the current job to finish, or request a stop first.",
+                "请等待当前作业结束，或先请求停止。",
+            ));
+            return Task::none();
+        }
+        self.busy = true;
+        self.scan_return_root = self
+            .scan
+            .as_ref()
+            .filter(|scan| !self.overview && source_catalog::path_equal(&scan.root_path, &root))
+            .map(|scan| scan.root_path.clone());
+        self.pending_scan_root = Some(root.clone());
+        self.request(
+            "start_scan",
+            json!({"root_path":root,"request_key":new_id()}),
+            Response::StartedScan,
         )
     }
     fn connect(path: PathBuf) -> Task<Message> {
@@ -490,11 +582,28 @@ impl App {
             move |result| Message::Response(response.clone(), result),
         )
     }
-    fn reload(&self) -> Task<Message> {
-        Task::batch([
-            self.request("list_sources", json!({}), Response::Sources),
-            self.request("list_scans", json!({"limit": 100}), Response::Scans),
-        ])
+    fn reload(&mut self) -> Task<Message> {
+        self.catalog_epoch += 1;
+        let epoch = self.catalog_epoch;
+        let Some(client) = self.client.clone() else {
+            return Task::none();
+        };
+        Task::perform(
+            async move {
+                let scan_client = client.clone();
+                let scans = collect_scan_pages(move |args| {
+                    let client = scan_client.clone();
+                    async move { client.call("list_scans", args).await }
+                });
+                // Migrate history only after sources and every history page
+                // belong to one complete refresh of the overview.
+                let (sources, scans) =
+                    tokio::try_join!(client.call("list_sources", json!({})), scans)
+                        .map_err(|error| error.to_string())?;
+                Ok(json!({"sources":sources,"items":scans}))
+            },
+            move |result| Message::Response(Response::Scans { epoch }, result),
+        )
     }
     fn subscription(&self) -> Subscription<Message> {
         let jobs = if self.active.is_some() {
@@ -552,8 +661,8 @@ impl App {
                 }
                 if let Err(error) = result {
                     self.banner = Some(LocalizedText::new(
-                        format!("Language changed, but the preference could not be saved. {error}"),
-                        format!("语言已切换，但未能保存偏好。{error}"),
+                        format!("Preferences could not be saved. {error}"),
+                        format!("未能保存偏好。{error}"),
                     ));
                 }
             }
@@ -685,6 +794,11 @@ impl App {
                 return Self::connect(self.data_dir.clone());
             }
             Message::Response(response, result) => {
+                if let Response::Scans { epoch } = &response {
+                    if *epoch != self.catalog_epoch {
+                        return Task::none();
+                    }
+                }
                 let response_epoch = match &response {
                     Response::Scan { epoch }
                     | Response::Children { epoch, .. }
@@ -700,6 +814,10 @@ impl App {
                 match result {
                     Ok(value) => return self.receive(response, value),
                     Err(error) => {
+                        if matches!(response, Response::Scans { .. }) {
+                            self.banner = Some(error.into());
+                            return Task::none();
+                        }
                         if let Response::Preview {
                             scan_epoch,
                             hover_epoch,
@@ -721,6 +839,10 @@ impl App {
                         if matches!(response, Response::PlanStarted(_) | Response::Executed) {
                             self.active = None;
                         }
+                        if matches!(response, Response::StartedScan) {
+                            self.pending_scan_root = None;
+                            self.scan_return_root = None;
+                        }
                     }
                 }
             }
@@ -739,15 +861,57 @@ impl App {
                     Message::FolderPicked,
                 );
             }
-            Message::FolderPicked(Some(path)) | Message::StartScan(path) => {
-                if self.active.is_some() {
-                    self.banner = Some(LocalizedText::new(
-                        "Wait for the current job to finish, or request a stop first.",
-                        "请等待当前作业结束，或先请求停止。",
-                    ));
+            Message::FolderPicked(Some(path)) => {
+                return Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            let path =
+                                std::fs::canonicalize(path).map_err(|error| error.to_string())?;
+                            if !path.is_dir() {
+                                return Err("The selected path is not a folder".into());
+                            }
+                            Ok(NativePath::new(&path))
+                        })
+                        .await
+                        .map_err(|error| format!("Folder normalization task failed: {error}"))?
+                    },
+                    Message::FolderNormalized,
+                );
+            }
+            Message::FolderNormalized(Ok(root)) => {
+                self.collector_interaction.cancel();
+                self.overview = true;
+                self.reset_preview();
+                let native_source = self
+                    .sources
+                    .iter()
+                    .any(|source| source_catalog::path_equal(&source.mount_path, &root));
+                let save = if !native_source && self.catalog.register(root.clone()) {
+                    self.persist_catalog()
                 } else {
-                    self.busy = true;
-                    return self.request("start_scan", json!({"root_path": ohmydisk_core::model::NativePath::new(&path), "request_key": new_id()}), Response::StartedScan);
+                    Task::none()
+                };
+                let scan = self.start_scan(root);
+                return Task::batch([save, scan]);
+            }
+            Message::FolderNormalized(Err(error)) => {
+                self.banner = Some(LocalizedText::new(
+                    format!("Could not add the folder. {error}"),
+                    format!("无法添加文件夹。{error}"),
+                ));
+            }
+            Message::StartScan(path) => return self.start_scan(NativePath::new(&path)),
+            Message::RemoveFolder(path) => {
+                if !self.busy
+                    && !self.source_scanning(&path)
+                    && self
+                        .catalog
+                        .folders()
+                        .iter()
+                        .any(|folder| source_catalog::path_equal(folder, &path))
+                {
+                    self.catalog.remove(&path);
+                    return self.persist_catalog();
                 }
             }
             Message::FolderPicked(None) => {}
@@ -931,20 +1095,6 @@ impl App {
                     }
                 }
             }
-            Message::CloseScan(id) => {
-                if self.draft_scan_id.as_ref() == Some(&id) && !self.collection.is_empty() {
-                    self.banner = Some(LocalizedText::new(
-                        "This scan still has collected items. Process them or clear the collection before closing the record.",
-                        "这个扫描仍有待处理的收集项目。请先处理或清空收集区，再关闭记录。",
-                    ));
-                } else {
-                    return self.request(
-                        "release_scan",
-                        json!({"scan_id":id}),
-                        Response::Release(id),
-                    );
-                }
-            }
             Message::ClearBanner => self.banner = None,
             _ => {}
         }
@@ -953,8 +1103,13 @@ impl App {
 
     fn receive(&mut self, response: Response, value: Value) -> Task<Message> {
         match response {
-            Response::Sources => self.sources = decode_items(&value),
-            Response::Scans => self.scans = decode_items(&value),
+            Response::Scans { epoch } if epoch == self.catalog_epoch => {
+                self.sources = decode_items(&value["sources"]);
+                self.scans = decode_items(&value);
+                if self.catalog.reconcile(&self.scans, &self.sources) {
+                    return self.persist_catalog();
+                }
+            }
             Response::StartedScan => {
                 self.busy = false;
                 if let Some(id) = string(&value, "job_id") {
@@ -965,6 +1120,9 @@ impl App {
                         progress: LocalizedText::new("Waiting to scan…", "等待扫描…"),
                         clock: scan_clock::Clock::default(),
                     });
+                } else {
+                    self.pending_scan_root = None;
+                    self.scan_return_root = None;
                 }
                 return self.reload();
             }
@@ -1010,6 +1168,9 @@ impl App {
                         }
                         self.active = None;
                         self.busy = false;
+                        if matches!(work, Work::Scan | Work::Refresh) {
+                            self.pending_scan_root = None;
+                        }
                         if let Some(error) = job.error {
                             self.banner = Some(error.to_string().into());
                         }
@@ -1034,7 +1195,28 @@ impl App {
                             ));
                         }
                         match work {
-                            Work::Scan | Work::Refresh => {
+                            Work::Scan => {
+                                let refresh_details =
+                                    self.scan_return_root.take().is_some_and(|root| {
+                                        !self.overview
+                                            && self.scan.as_ref().is_some_and(|scan| {
+                                                source_catalog::path_equal(&scan.root_path, &root)
+                                            })
+                                            && matches!(
+                                                job.state.as_str(),
+                                                "completed" | "completed_with_errors"
+                                            )
+                                    });
+                                if refresh_details {
+                                    if let Some(scan_id) = string(&job.result, "scan_id") {
+                                        return Task::batch([
+                                            self.open_scan(scan_id),
+                                            self.reload(),
+                                        ]);
+                                    }
+                                }
+                            }
+                            Work::Refresh => {
                                 if let Some(scan_id) = string(&job.result, "scan_id") {
                                     return Task::batch([self.open_scan(scan_id), self.reload()]);
                                 }
@@ -1095,6 +1277,7 @@ impl App {
                                     matches!(state, "queued" | "running" | "cancel_requested")
                                 }) && self.active.is_none()
                                 {
+                                    self.pending_scan_root = Some(scan.root_path.clone());
                                     self.active = Some(ActiveJob {
                                         id,
                                         work: Work::Scan,
@@ -1130,6 +1313,7 @@ impl App {
                         };
                         if scan.known_stale && self.active.is_none() {
                             if let Some(id) = &scan.refresh_job_id {
+                                self.pending_scan_root = Some(scan.root_path.clone());
                                 self.active = Some(ActiveJob {
                                     id: id.clone(),
                                     work: Work::Refresh,
@@ -1312,6 +1496,8 @@ impl App {
                         scan.known_stale = true;
                     }
                     if let Some(job) = string(&value, "refresh_job_id") {
+                        self.pending_scan_root =
+                            self.scan.as_ref().map(|scan| scan.root_path.clone());
                         self.active = Some(ActiveJob {
                             id: job,
                             work: Work::Refresh,
@@ -1327,22 +1513,6 @@ impl App {
                     }
                     return self.reload();
                 }
-            }
-            Response::Release(id) => {
-                if self.scan.as_ref().is_some_and(|scan| scan.scan_id == id) {
-                    self.scan = None;
-                    self.location = None;
-                    self.breadcrumbs.clear();
-                    self.history.clear();
-                    self.children.clear();
-                    self.chart_nodes.clear();
-                    self.segments.clear();
-                }
-                self.banner = Some(LocalizedText::new(
-                    "Scan record closed. Source files are unchanged.",
-                    "已关闭扫描记录。源文件未被改动。",
-                ));
-                return self.reload();
             }
             _ => {}
         }
@@ -1968,6 +2138,46 @@ impl Drop for App {
     }
 }
 
+async fn collect_scan_pages<F, Fut>(mut fetch: F) -> Result<Vec<Value>, AppError>
+where
+    F: FnMut(Value) -> Fut,
+    Fut: std::future::Future<Output = Result<Value, AppError>>,
+{
+    // A concurrent MCP scan changes the server's cursor binding. Retry once
+    // from the beginning and never expose an incomplete history to migration.
+    for attempt in 0..2 {
+        let mut items = Vec::new();
+        let mut cursor = None;
+        let mut seen = HashSet::new();
+        loop {
+            let mut args = json!({"limit":500});
+            if let Some(cursor) = &cursor {
+                args["cursor"] = json!(cursor);
+            }
+            let page = match fetch(args).await {
+                Ok(page) => page,
+                Err(error) if error.code == "invalid_cursor" && attempt == 0 => break,
+                Err(error) => return Err(error),
+            };
+            let page_items = page.get("items").and_then(Value::as_array).ok_or_else(|| {
+                AppError::new("invalid_response", "Scan history page has no items array")
+            })?;
+            items.extend(page_items.iter().cloned());
+            let Some(next) = string(&page, "next_cursor") else {
+                return Ok(items);
+            };
+            if !seen.insert(next.clone()) {
+                return Err(AppError::new(
+                    "invalid_response",
+                    "Scan history repeated a pagination cursor",
+                ));
+            }
+            cursor = Some(next);
+        }
+    }
+    unreachable!("the final pagination attempt returns its error")
+}
+
 fn require_occupancy_backend(capabilities: &Value) -> Result<(), String> {
     if capabilities
         .get("size_metrics")
@@ -2067,6 +2277,21 @@ mod language_tests {
             manifest: vec![json!({"name":"目标.txt"})],
             next_cursor: None,
         }
+    }
+
+    fn terminal_scan_job(state: &str, scan_id: &str) -> Value {
+        serde_json::to_value(Job {
+            id: "scan-job".into(),
+            kind: "scan".into(),
+            state: state.into(),
+            created_at: 1,
+            elapsed_ms: Some(100),
+            finished_at: Some(101),
+            progress: Default::default(),
+            result: json!({"scan_id":scan_id}),
+            error: None,
+        })
+        .unwrap()
     }
 
     #[test]
@@ -2285,6 +2510,322 @@ mod language_tests {
         let restarted = App::new(data_dir).0;
         assert_eq!(restarted.language, Language::English);
         assert_eq!(restarted.app_menu.language(), Language::English);
+    }
+
+    #[test]
+    fn folder_registration_deduplicates_before_scanning_and_survives_restart() {
+        let Fixture {
+            mut app,
+            _data_dir: temporary,
+        } = app();
+        let folder_path = temporary.path().join("documents");
+        std::fs::create_dir(&folder_path).unwrap();
+        let folder = NativePath::new(&std::fs::canonicalize(&folder_path).unwrap());
+        let _ = app.update(Message::FolderNormalized(Ok(folder.clone())));
+        assert_eq!(app.catalog.folders().len(), 1);
+        assert!(source_catalog::path_equal(
+            &app.catalog.folders()[0],
+            &folder
+        ));
+        assert!(app.source_scanning(&folder));
+        let generation = app.language_generation;
+
+        let _ = app.update(Message::FolderNormalized(Ok(folder.clone())));
+        assert_eq!(app.catalog.folders().len(), 1);
+        assert_eq!(app.language_generation, generation);
+        let data_dir = app.data_dir.clone();
+        drop(app);
+
+        let restarted = App::new(data_dir).0;
+        assert_eq!(restarted.catalog.folders().len(), 1);
+        assert!(source_catalog::path_equal(
+            &restarted.catalog.folders()[0],
+            &folder
+        ));
+        assert!(!temporary.path().join("preferences.json").exists());
+        assert!(folder_path.is_dir());
+    }
+
+    #[test]
+    fn removing_folder_persists_tombstone_and_preserves_snapshots_and_files() {
+        let Fixture {
+            mut app,
+            _data_dir: temporary,
+        } = app();
+        let folder_path = temporary.path().join("documents");
+        std::fs::create_dir(&folder_path).unwrap();
+        let kept_file = folder_path.join("keep.txt");
+        std::fs::write(&kept_file, "keep this file").unwrap();
+        let folder = NativePath::new(&std::fs::canonicalize(&folder_path).unwrap());
+        let _ = app.update(Message::FolderNormalized(Ok(folder.clone())));
+        // Simulate an unsuccessful start request; registration is independent.
+        let _ = app.update(Message::Response(
+            Response::StartedScan,
+            Err("fixture start rejected".into()),
+        ));
+        let summary = json!({
+            "scan_id":"retained-snapshot", "root_id":"root", "root_path":folder,
+            "complete":true, "state":"completed"
+        });
+        app.scans = vec![serde_json::from_value(summary.clone()).unwrap()];
+        app.collection = vec![node()];
+        app.draft_scan_id = Some("retained-snapshot".into());
+        app.review = Some(plan());
+
+        let _ = app.update(Message::RemoveFolder(folder.clone()));
+
+        assert!(app.catalog.folders().is_empty());
+        assert_eq!(app.scans[0].scan_id, "retained-snapshot");
+        assert_eq!(app.collection.len(), 1);
+        assert_eq!(app.draft_scan_id.as_deref(), Some("retained-snapshot"));
+        assert_eq!(app.review.as_ref().unwrap().id, "plan");
+        assert_eq!(
+            std::fs::read_to_string(&kept_file).unwrap(),
+            "keep this file"
+        );
+        let data_dir = app.data_dir.clone();
+        drop(app);
+
+        let mut restarted = App::new(data_dir).0;
+        assert!(restarted.catalog.folders().is_empty());
+        let _ = restarted.receive(
+            Response::Scans { epoch: 0 },
+            json!({"sources":{"items":[]}, "items":[summary]}),
+        );
+        assert!(restarted.catalog.folders().is_empty());
+        assert_eq!(restarted.scans[0].scan_id, "retained-snapshot");
+        assert!(!temporary.path().join("preferences.json").exists());
+    }
+
+    #[test]
+    fn folder_removal_waits_for_busy_work_and_its_scan() {
+        let mut app = app();
+        let folder = NativePath::new(&app._data_dir.path().join("documents"));
+        let _ = app.update(Message::FolderNormalized(Ok(folder.clone())));
+        let _ = app.update(Message::RemoveFolder(folder.clone()));
+        assert_eq!(app.catalog.folders().len(), 1);
+        app.busy = false;
+        let _ = app.update(Message::RemoveFolder(folder.clone()));
+        assert_eq!(app.catalog.folders().len(), 1);
+        app.pending_scan_root = None;
+        let _ = app.update(Message::RemoveFolder(folder));
+        assert!(app.catalog.folders().is_empty());
+    }
+
+    #[test]
+    fn native_volume_scan_does_not_register_a_custom_folder() {
+        let mut app = app();
+        let root_path = app._data_dir.path().join("volume");
+        let root = NativePath::new(&root_path);
+        app.sources = vec![Volume {
+            id: "volume".into(),
+            name: "Fixture volume".into(),
+            mount_path: root.clone(),
+            total_bytes: 100,
+            available_bytes: 50,
+            space_observation: None,
+        }];
+        let _ = app.update(Message::StartScan(root_path));
+        assert!(app.catalog.folders().is_empty());
+        assert!(!app.preference_writer.has_unsaved());
+        app.busy = false;
+        app.pending_scan_root = None;
+        let _ = app.update(Message::FolderNormalized(Ok(root)));
+        assert!(app.catalog.folders().is_empty());
+        assert!(!app.preference_writer.has_unsaved());
+    }
+
+    #[test]
+    fn added_folder_finishes_on_overview_and_refresh_makes_results_viewable() {
+        let mut app = app();
+        app.overview = false;
+        let folder = NativePath::new(&app._data_dir.path().join("documents"));
+        let _ = app.update(Message::FolderNormalized(Ok(folder.clone())));
+        assert!(app.overview);
+        let _ = app.receive(Response::StartedScan, json!({"job_id":"scan-job"}));
+
+        let _ = app.receive(
+            Response::Poll {
+                id: "scan-job".into(),
+            },
+            terminal_scan_job("completed", "new-result"),
+        );
+
+        assert!(app.overview);
+        assert!(!app.loading);
+        assert!(app.active.is_none());
+        assert!(!app.source_scanning(&folder));
+        let epoch = app.catalog_epoch;
+        let _ = app.receive(
+            Response::Scans { epoch },
+            json!({"sources":{"items":[]},"items":[{
+                "scan_id":"new-result", "root_id":"root", "root_path":folder,
+                "complete":true, "state":"completed", "started_at":1, "created_at":2
+            }]}),
+        );
+        assert!(app.overview);
+        assert_eq!(
+            source_catalog::latest_viewable(&app.scans, &folder)
+                .unwrap()
+                .scan_id,
+            "new-result"
+        );
+    }
+
+    #[test]
+    fn failed_retry_keeps_the_previous_result_viewable_on_overview() {
+        let mut app = app();
+        let folder = NativePath::new(&app._data_dir.path().join("documents"));
+        let old_result = json!({
+            "scan_id":"old-result", "root_id":"root", "root_path":folder,
+            "complete":true, "state":"completed", "started_at":1, "created_at":2
+        });
+        app.scans = vec![serde_json::from_value(old_result.clone()).unwrap()];
+        let _ = app.update(Message::FolderNormalized(Ok(folder.clone())));
+        let _ = app.receive(Response::StartedScan, json!({"job_id":"scan-job"}));
+        let _ = app.receive(
+            Response::Poll {
+                id: "scan-job".into(),
+            },
+            terminal_scan_job("failed", "failed-retry"),
+        );
+        assert!(app.overview);
+        assert!(!app.loading);
+        let epoch = app.catalog_epoch;
+        let _ = app.receive(
+            Response::Scans { epoch },
+            json!({"sources":{"items":[]},"items":[old_result,{
+                "scan_id":"failed-retry", "root_id":null, "root_path":folder,
+                "complete":false, "state":"failed", "started_at":3, "created_at":4
+            }]}),
+        );
+        assert_eq!(
+            source_catalog::latest(&app.scans, &folder).unwrap().scan_id,
+            "failed-retry"
+        );
+        assert_eq!(
+            source_catalog::latest_viewable(&app.scans, &folder)
+                .unwrap()
+                .scan_id,
+            "old-result"
+        );
+        assert!(app.overview);
+    }
+
+    #[test]
+    fn details_rescan_refreshes_only_while_still_viewing_its_root() {
+        for destination in ["same-root", "overview", "different-root"] {
+            let mut app = app();
+            let folder_path = app._data_dir.path().join("documents");
+            let folder = NativePath::new(&folder_path);
+            app.scan = Some(
+                serde_json::from_value(json!({
+                    "scan_id":"old-result", "root_id":"root", "root_path":folder,
+                    "complete":true, "state":"completed"
+                }))
+                .unwrap(),
+            );
+            app.overview = false;
+            let _ = app.update(Message::StartScan(folder_path));
+            let _ = app.receive(Response::StartedScan, json!({"job_id":"scan-job"}));
+            match destination {
+                "overview" => app.overview = true,
+                "different-root" => {
+                    let other = NativePath::new(&app._data_dir.path().join("other"));
+                    app.scan.as_mut().unwrap().root_path = other;
+                }
+                _ => {}
+            }
+            let navigation_epoch = app.epoch;
+            let _ = app.receive(
+                Response::Poll {
+                    id: "scan-job".into(),
+                },
+                terminal_scan_job("completed", "new-result"),
+            );
+            if destination == "same-root" {
+                assert!(app.loading);
+                assert_eq!(app.epoch, navigation_epoch + 1);
+            } else {
+                assert!(!app.loading);
+                assert_eq!(app.epoch, navigation_epoch);
+            }
+            assert_eq!(app.overview, destination == "overview");
+        }
+    }
+
+    #[test]
+    fn delayed_folder_selection_preserves_cleanup_review_without_starting_scan() {
+        let mut app = app();
+        let folder = NativePath::new(&app._data_dir.path().join("documents"));
+        app.review = Some(plan());
+        app.collection = vec![node()];
+        app.draft_scan_id = Some("review-scan".into());
+
+        let _ = app.update(Message::FolderNormalized(Ok(folder.clone())));
+
+        assert_eq!(app.catalog.folders().len(), 1);
+        assert!(source_catalog::path_equal(
+            &app.catalog.folders()[0],
+            &folder
+        ));
+        assert_eq!(app.review.as_ref().unwrap().id, "plan");
+        assert_eq!(app.review.as_ref().unwrap().hash, "hash");
+        assert_eq!(app.collection.len(), 1);
+        assert_eq!(app.draft_scan_id.as_deref(), Some("review-scan"));
+        assert!(app.active.is_none());
+        assert!(app.pending_scan_root.is_none());
+        assert!(!app.busy);
+        assert!(
+            app.banner
+                .as_ref()
+                .unwrap()
+                .get(Language::English)
+                .contains("Close the cleanup review")
+        );
+        assert!(
+            app.banner
+                .as_ref()
+                .unwrap()
+                .get(Language::Chinese)
+                .contains("关闭清理确认")
+        );
+    }
+
+    #[tokio::test]
+    async fn history_pagination_loads_every_page_and_restarts_a_stale_cursor_once() {
+        let mut pages = std::collections::VecDeque::from([
+            Ok(json!({"items":["old-partial"],"next_cursor":"old:1"})),
+            Err(AppError::new("invalid_cursor", "history changed")),
+            Ok(json!({"items":["latest"],"next_cursor":"new:1"})),
+            Ok(json!({"items":["older"],"next_cursor":null})),
+        ]);
+        let mut requests = Vec::new();
+        let items = collect_scan_pages(|args| {
+            requests.push(args);
+            std::future::ready(pages.pop_front().unwrap())
+        })
+        .await
+        .unwrap();
+        assert_eq!(items, vec![json!("latest"), json!("older")]);
+        assert_eq!(requests.len(), 4);
+        assert!(requests[0].get("cursor").is_none());
+        assert_eq!(requests[1]["cursor"], "old:1");
+        assert!(requests[2].get("cursor").is_none());
+        assert_eq!(requests[3]["cursor"], "new:1");
+    }
+
+    #[tokio::test]
+    async fn history_pagination_stops_after_a_second_stale_cursor() {
+        let mut calls = 0;
+        let error = collect_scan_pages(|_| {
+            calls += 1;
+            std::future::ready(Err(AppError::new("invalid_cursor", "history changed")))
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, "invalid_cursor");
+        assert_eq!(calls, 2);
     }
 
     #[test]
