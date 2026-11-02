@@ -42,6 +42,51 @@ struct PlanRecord {
     plan: Option<CleanupPlan>,
 }
 
+#[derive(Clone, Copy)]
+struct ScanWorkerSelection {
+    requested: Option<usize>,
+    workers: usize,
+    policy: ScanConcurrency,
+}
+impl ScanWorkerSelection {
+    fn resolve(args: &Value, policy: ScanConcurrency) -> Result<Self, AppError> {
+        let requested = args
+            .get("workers")
+            .map(|value| {
+                value
+                    .as_u64()
+                    .and_then(|value| usize::try_from(value).ok())
+                    .filter(|workers| (1..=MAX_SCAN_WORKERS).contains(workers))
+                    .ok_or_else(|| {
+                        AppError::new(
+                            "invalid_arguments",
+                            format!("workers must be an integer from 1 to {MAX_SCAN_WORKERS}"),
+                        )
+                    })
+            })
+            .transpose()?;
+        Ok(Self {
+            requested,
+            workers: requested.unwrap_or(policy.auto_workers),
+            policy,
+        })
+    }
+
+    fn annotate(self, result: &mut Value) {
+        result["scan_worker_mode"] = json!(if self.requested.is_some() {
+            "manual"
+        } else {
+            "auto"
+        });
+        result["requested_workers"] = json!(self.requested);
+        result["scan_workers"] = json!(self.workers);
+        result["effective_scan_worker_limit"] =
+            json!(self.workers.min(self.policy.filesystem_workers));
+        result["global_filesystem_workers"] = json!(self.policy.filesystem_workers);
+        result["available_parallelism"] = json!(self.policy.available_parallelism);
+    }
+}
+
 pub struct Engine {
     store: Arc<Store>,
     platform: Arc<dyn Platform>,
@@ -53,6 +98,7 @@ pub struct Engine {
     active: AtomicUsize,
     workers: Arc<tokio::sync::Semaphore>,
     snapshots: SnapshotCache,
+    scan_concurrency: ScanConcurrency,
     filesystem_budget: Arc<tokio::sync::Semaphore>,
     query_budget: Arc<tokio::sync::Semaphore>,
     cold_load_budget: Arc<tokio::sync::Semaphore>,
@@ -62,6 +108,7 @@ impl Engine {
         ohmydisk_platform::prepare_private_dir(&data_dir)?;
         let data_dir = std::fs::canonicalize(data_dir)?;
         let store = Arc::new(Store::open(&data_dir.join("state.sqlite"))?);
+        let scan_concurrency = ScanConcurrency::detect();
         let engine = Arc::new(Self {
             store,
             platform,
@@ -73,7 +120,10 @@ impl Engine {
             active: AtomicUsize::new(0),
             workers: Arc::new(tokio::sync::Semaphore::new(2)),
             snapshots: SnapshotCache::default(),
-            filesystem_budget: Arc::new(tokio::sync::Semaphore::new(8)),
+            scan_concurrency,
+            filesystem_budget: Arc::new(tokio::sync::Semaphore::new(
+                scan_concurrency.filesystem_workers,
+            )),
             query_budget: Arc::new(tokio::sync::Semaphore::new(2)),
             cold_load_budget: Arc::new(tokio::sync::Semaphore::new(2)),
         });
@@ -93,7 +143,16 @@ impl Engine {
         }
         match op {
             "get_capabilities" => Ok(
-                json!({"api_version":1,"application_version":env!("CARGO_PKG_VERSION"),"platform":std::env::consts::OS,"logical_bytes":true,"allocated_bytes":cfg!(any(unix,windows)),"cleanup_modes":["trash","permanent"],"authorization_model":"host_confirmed","scope_policy":{"absolute_local_roots":true,"follow_links":false,"cross_filesystems":false,"protected_state_directory":NativePath::new(&self.data_dir)},"snapshots":"immutable","size_metrics":["logical","allocated","attributed"],"default_display_metric":"attributed","legacy_query_default":"logical","progress_bytes_metric":"logical","scan_concurrency":{"directory_workers":4,"maximum_directory_workers":8,"global_filesystem_workers":8,"expensive_queries":2},"space_reclaimed":"observe_volume_available_bytes; trash does not promise freed space"}),
+                json!({"api_version":1,"application_version":env!("CARGO_PKG_VERSION"),"platform":std::env::consts::OS,"logical_bytes":true,"allocated_bytes":cfg!(any(unix,windows)),"cleanup_modes":["trash","permanent"],"authorization_model":"host_confirmed","scope_policy":{"absolute_local_roots":true,"follow_links":false,"cross_filesystems":false,"protected_state_directory":NativePath::new(&self.data_dir)},"snapshots":"immutable","size_metrics":["logical","allocated","attributed"],"default_display_metric":"attributed","legacy_query_default":"logical","progress_bytes_metric":"logical","scan_concurrency":{
+                    "default_mode":"auto",
+                    "available_parallelism":self.scan_concurrency.available_parallelism,
+                    "auto_worker_cap":AUTO_SCAN_WORKER_CAP,
+                    "directory_workers":self.scan_concurrency.auto_workers,
+                    "maximum_directory_workers":MAX_SCAN_WORKERS,
+                    "global_filesystem_workers":self.scan_concurrency.filesystem_workers,
+                    "expensive_queries":2,
+                    "manual_workers_semantics":"per_scan_ceiling_subject_to_shared_filesystem_budget"
+                },"space_reclaimed":"observe_volume_available_bytes; trash does not promise freed space"}),
             ),
             "list_sources" => Ok(json!({"items":self.platform.volumes()?})),
             "start_scan" => self.start_scan(args),
@@ -255,19 +314,7 @@ impl Engine {
         if let Some(old) = self.store.request("start_scan", key, &digest)? {
             return Ok(old);
         }
-        let scan_workers = match args.get("workers") {
-            None => scan_async::ScanOptions::default().workers,
-            Some(value) => value
-                .as_u64()
-                .filter(|workers| (1..=8).contains(workers))
-                .and_then(|workers| usize::try_from(workers).ok())
-                .ok_or_else(|| {
-                    AppError::new(
-                        "invalid_arguments",
-                        "workers must be an integer from 1 to 8",
-                    )
-                })?,
-        };
+        let selection = ScanWorkerSelection::resolve(&args, self.scan_concurrency)?;
         let path = path_argument(&args, "root_path")?;
         if !path.is_absolute() {
             return Err(AppError::new(
@@ -292,7 +339,9 @@ impl Engine {
             refresh_job_id: None,
             space_accounting: None,
         };
-        let job = new_job(&job_id, "scan", json!({"scan_id":scan_id}));
+        let mut initial_result = json!({"scan_id":scan_id});
+        selection.annotate(&mut initial_result);
+        let job = new_job(&job_id, "scan", initial_result);
         let response = json!({"scan_id":scan_id,"job_id":job_id});
         let (response, accepted) = self.store.accept_job(
             "start_scan",
@@ -304,7 +353,7 @@ impl Engine {
             None,
         )?;
         if accepted {
-            self.launch_scan(job_id, scan_id, path, scan_workers);
+            self.launch_scan(job_id, scan_id, path, selection);
         }
         Ok(response)
     }
@@ -313,12 +362,12 @@ impl Engine {
         job_id: String,
         scan_id: String,
         path: PathBuf,
-        scan_workers: usize,
+        selection: ScanWorkerSelection,
     ) {
         self.launch(job_id, move |engine, job_id, cancel| {
             let started=Instant::now();
             let runtime = tokio::runtime::Handle::current();
-            let options = scan_async::ScanOptions { workers: scan_workers, ..Default::default() };
+            let options = scan_async::ScanOptions { workers: selection.workers, ..Default::default() };
             let (mut snapshot, progress_writes, progress_write_ms) = runtime.block_on(async {
                 let (sender, mut receiver) = tokio::sync::watch::channel(ScanProgress::default());
                 let writer_engine = engine.clone();
@@ -360,12 +409,15 @@ impl Engine {
                 r.root_path=snapshot.root_path.clone();r.snapshot_id=Some(snapshot.id.clone());r.root_id=snapshot.nodes.first().map(|node|node.id.clone());r.space_accounting=snapshot.space_accounting.clone();r.complete=snapshot.complete;r.created_at=snapshot.created_at;r.issue_count=snapshot.issues.len();
                 r.logical_bytes=snapshot.nodes.iter().find(|n|n.id==snapshot.root_id).map_or(0,|n|n.logical_bytes);
             })?;
-            engine.store.update::<Job>("job",&job_id,|j|j.result=json!({
+            engine.store.update::<Job>("job",&job_id,|j| {
+                j.result=json!({
                 "scan_id":scan_id,"snapshot_id":snapshot.id,"complete":snapshot.complete,"issue_count":snapshot.issues.len(),
                 "scan_ms":scan_ms,"persist_ms":persist_ms,"progress_writes":progress_writes,"progress_write_ms":progress_write_ms,
                 "snapshot_codec":storage.codec,"snapshot_stored_bytes":storage.stored_bytes,"snapshot_json_bytes":storage.json_bytes,
-                "index_build_ms":index_build_ms,"scan_workers":options.workers,
-            }))?;
+                "index_build_ms":index_build_ms,
+                });
+                selection.annotate(&mut j.result);
+            })?;
             Ok(state.into())
         });
     }
@@ -811,6 +863,36 @@ fn expensive_query(query: &Query, root_id: &str) -> bool {
 #[cfg(test)]
 mod query_budget_tests {
     use super::*;
+
+    #[test]
+    fn worker_selection_preserves_manual_ceiling_and_reports_shared_limit() {
+        for cpu in [1, 2, 18, 128] {
+            let policy = ScanConcurrency::for_parallelism(cpu);
+            let auto = ScanWorkerSelection::resolve(&json!({}), policy).unwrap();
+            let mut result = json!({});
+            auto.annotate(&mut result);
+            assert_eq!(result["scan_worker_mode"], "auto");
+            assert_eq!(result["requested_workers"], Value::Null);
+            assert_eq!(result["scan_workers"], cpu.min(AUTO_SCAN_WORKER_CAP));
+            assert_eq!(
+                result["global_filesystem_workers"],
+                cpu.min(MAX_SCAN_WORKERS)
+            );
+            for manual in [1, 4, 8, 18, MAX_SCAN_WORKERS] {
+                let selected =
+                    ScanWorkerSelection::resolve(&json!({"workers":manual}), policy).unwrap();
+                selected.annotate(&mut result);
+                assert_eq!(result["scan_worker_mode"], "manual");
+                assert_eq!(result["requested_workers"], manual);
+                assert_eq!(result["scan_workers"], manual);
+                assert_eq!(
+                    result["effective_scan_worker_limit"],
+                    manual.min(policy.filesystem_workers)
+                );
+            }
+        }
+    }
+
     #[test]
     fn unfiltered_subtree_queries_are_expensive_but_root_and_children_pages_are_not() {
         assert!(expensive_query(
@@ -873,7 +955,7 @@ mod query_budget_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cancellation_before_global_io_admission_saves_no_phantom_root() {
+    async fn auto_and_manual_scans_share_the_resolved_budget_before_cancellation() {
         let state = tempfile::tempdir().unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
         let engine = Engine::open(
@@ -884,29 +966,79 @@ mod query_budget_tests {
         let held = engine
             .filesystem_budget
             .clone()
-            .acquire_many_owned(8)
+            .acquire_many_owned(u32::try_from(engine.scan_concurrency.filesystem_workers).unwrap())
             .await
             .unwrap();
-        let started = engine.handle("start_scan", json!({"root_path":state.path().join("not-read"),"request_key":"cancel-before-admission","workers":2})).await.unwrap();
-        engine
-            .handle("cancel_job", json!({"job_id":started["job_id"]}))
+        let capabilities = engine.handle("get_capabilities", json!({})).await.unwrap();
+        let limits = &capabilities["scan_concurrency"];
+        assert_eq!(limits["default_mode"], "auto");
+        assert_eq!(
+            limits["global_filesystem_workers"],
+            engine.scan_concurrency.filesystem_workers
+        );
+        assert_eq!(limits["maximum_directory_workers"], MAX_SCAN_WORKERS);
+        assert_eq!(engine.filesystem_budget.available_permits(), 0);
+        let manual_input = json!({"root_path":state.path().join("not-read"),"request_key":"cancel-manual-before-admission","workers":MAX_SCAN_WORKERS});
+        let auto_input = json!({"root_path":state.path().join("not-read"),"request_key":"cancel-auto-before-admission"});
+        let manual = engine
+            .handle("start_scan", manual_input.clone())
             .await
             .unwrap();
-        let job = tokio::time::timeout(Duration::from_secs(3), async {
-            loop {
-                let job = engine
-                    .handle("get_job", json!({"job_id":started["job_id"]}))
-                    .await
-                    .unwrap();
-                if !active_state(job["state"].as_str().unwrap()) {
-                    break job;
+        let auto = engine
+            .handle("start_scan", auto_input.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            engine.handle("start_scan", manual_input).await.unwrap(),
+            manual
+        );
+        assert_eq!(engine.handle("start_scan", auto_input).await.unwrap(), auto);
+        for (started, mode, workers) in [
+            (&manual, "manual", MAX_SCAN_WORKERS),
+            (&auto, "auto", engine.scan_concurrency.auto_workers),
+        ] {
+            let initial = engine
+                .handle("get_job", json!({"job_id":started["job_id"]}))
+                .await
+                .unwrap();
+            assert_eq!(initial["result"]["scan_worker_mode"], mode);
+            assert_eq!(initial["result"]["scan_workers"], workers);
+            assert_eq!(
+                initial["result"]["global_filesystem_workers"],
+                limits["global_filesystem_workers"]
+            );
+            engine
+                .handle("cancel_job", json!({"job_id":started["job_id"]}))
+                .await
+                .unwrap();
+            let job = tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    let job = engine
+                        .handle("get_job", json!({"job_id":started["job_id"]}))
+                        .await
+                        .unwrap();
+                    if !active_state(job["state"].as_str().unwrap()) {
+                        break job;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
                 }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
-        assert_eq!(job["state"], "cancelled");
+            })
+            .await
+            .unwrap();
+            assert_eq!(job["state"], "cancelled");
+            assert_eq!(job["result"]["scan_worker_mode"], mode);
+            assert_eq!(job["result"]["scan_workers"], workers);
+            assert_eq!(
+                job["result"]["effective_scan_worker_limit"],
+                workers.min(engine.scan_concurrency.filesystem_workers)
+            );
+            let scan = engine
+                .handle("get_scan", json!({"scan_id":started["scan_id"]}))
+                .await
+                .unwrap();
+            assert!(scan["root_id"].is_null());
+            assert!(scan["space_accounting"].is_null());
+        }
         tokio::time::timeout(Duration::from_secs(2), async {
             while engine.has_active_jobs() {
                 tokio::task::yield_now().await;
@@ -915,15 +1047,12 @@ mod query_budget_tests {
         .await
         .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 0);
-        let scan = engine
-            .handle("get_scan", json!({"scan_id":started["scan_id"]}))
-            .await
-            .unwrap();
-        assert!(scan["root_id"].is_null());
-        assert!(scan["space_accounting"].is_null());
-        assert_eq!(job["result"]["scan_workers"], 2);
         assert_eq!(engine.filesystem_budget.available_permits(), 0);
         drop(held);
+        assert_eq!(
+            engine.filesystem_budget.available_permits(),
+            engine.scan_concurrency.filesystem_workers
+        );
     }
 
     #[tokio::test]
@@ -935,7 +1064,16 @@ mod query_budget_tests {
             Arc::new(ForbiddenFilesystem(calls.clone())),
         )
         .unwrap();
-        for workers in [json!(0), json!(9), json!(1.5), json!("4")] {
+        for workers in [
+            json!(0),
+            json!(MAX_SCAN_WORKERS + 1),
+            json!(-1),
+            json!(1.5),
+            json!("4"),
+            json!("auto"),
+            Value::Null,
+            json!(true),
+        ] {
             let error = engine.handle("start_scan", json!({"root_path":state.path().join("not-read"),"request_key":new_id(),"workers":workers})).await.unwrap_err();
             assert_eq!(error.code, "invalid_arguments");
         }

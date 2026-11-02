@@ -66,6 +66,7 @@ class PackageTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         (self.root / "Cargo.toml").write_text('[workspace.package]\nversion = "1.2.3"\n', encoding="utf-8")
         (self.root / "README.md").write_text("Package README", encoding="utf-8")
+        (self.root / "README.zh-CN.md").write_text("中文使用说明", encoding="utf-8")
         (self.root / "docs").mkdir()
         (self.root / "docs/mcp.md").write_text("MCP instructions", encoding="utf-8")
         icons = self.root / "assets/icons"
@@ -136,6 +137,7 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(zipped.read(prefix + "ohmydisk.exe"), binary.read_bytes())
             self.assertEqual(zipped.read(prefix + "omd.ico"), self.icon.read_bytes())
             self.assertEqual(zipped.read(prefix + "README.md"), b"Package README")
+            self.assertEqual(zipped.read(prefix + "README.zh-CN.md"), "中文使用说明".encode("utf-8"))
             self.assertEqual(zipped.read(prefix + "docs/mcp.md"), b"MCP instructions")
         self.assertEqual(checksum.read_text(encoding="utf-8"), f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n")
         run.assert_not_called()
@@ -172,6 +174,8 @@ class PackageTests(unittest.TestCase):
             self.assertEqual(metadata["CFBundleShortVersionString"], "1.2.3")
             self.assertEqual(metadata["CFBundleIconFile"], "omd.icns")
             self.assertEqual(zipped.read(prefix + "OhMyDisk.app/Contents/Resources/omd.icns"), self.icns.read_bytes())
+            self.assertEqual(zipped.read(prefix + "README.md"), b"Package README")
+            self.assertEqual(zipped.read(prefix + "README.zh-CN.md"), "中文使用说明".encode("utf-8"))
             # The simulation also runs on Windows, whose chmod cannot create
             # POSIX execute bits. The archive must preserve its actual source mode.
             self.assertEqual(

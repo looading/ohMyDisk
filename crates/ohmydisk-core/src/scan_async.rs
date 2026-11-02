@@ -2,7 +2,8 @@
 //! directory frontier grow with the tree; worker count and transport batches do not.
 use crate::scan::{ScanBuilder, matching_observation, prepare_root};
 use crate::{
-    AppError, DirectoryEvent, FileInfo, NodeKind, Platform, ScanEntry, ScanProgress, Snapshot,
+    AppError, DirectoryEvent, FileInfo, MAX_SCAN_WORKERS, NodeKind, Platform, ScanConcurrency,
+    ScanEntry, ScanProgress, Snapshot,
 };
 use std::{
     collections::HashMap,
@@ -29,7 +30,7 @@ pub struct ScanOptions {
 impl Default for ScanOptions {
     fn default() -> Self {
         Self {
-            workers: 4,
+            workers: ScanConcurrency::detect().auto_workers,
             batch_entries: 128,
             batch_bytes: 256 * 1024,
         }
@@ -37,7 +38,7 @@ impl Default for ScanOptions {
 }
 impl ScanOptions {
     fn validate(self) -> Result<Self, AppError> {
-        if !(1..=64).contains(&self.workers)
+        if !(1..=MAX_SCAN_WORKERS).contains(&self.workers)
             || !(1..=4096).contains(&self.batch_entries)
             || !(1..=16 * 1024 * 1024).contains(&self.batch_bytes)
         {
@@ -374,6 +375,25 @@ async fn acquire_budget(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_options_use_auto_but_manual_values_can_exceed_auto() {
+        let options = ScanOptions::default();
+        assert_eq!(options.workers, ScanConcurrency::detect().auto_workers);
+        for workers in [1, 4, 8, 18, MAX_SCAN_WORKERS] {
+            assert!(ScanOptions { workers, ..options }.validate().is_ok());
+        }
+        for workers in [0, MAX_SCAN_WORKERS + 1, usize::MAX] {
+            assert_eq!(
+                ScanOptions { workers, ..options }
+                    .validate()
+                    .unwrap_err()
+                    .code,
+                "invalid_arguments"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn closing_full_transport_releases_blocking_sender() {
         let (sender, receiver) = mpsc::channel(1);

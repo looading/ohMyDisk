@@ -127,8 +127,12 @@ fn tools() -> Vec<Tool> {
         ),
         make(
             "start_scan",
-            "Start a background scan of an absolute local root; return scan_id and job_id immediately. Reuse request_key only for identical input. Does not follow directory links or cross filesystems.",
-            json!({"root_path":string,"workers":{"type":"integer","minimum":1,"maximum":8},"request_key":string}),
+            &format!(
+                "Start a background scan of an absolute local root; return scan_id and job_id immediately. Omit workers for Auto (available CPU parallelism capped at {}), or specify a per-scan ceiling of 1–{}. All scans share the backend filesystem budget reported by get_capabilities; a manual ceiling can exceed that budget. get_job reports the resolved configuration. Reuse request_key only for identical input. Does not follow directory links or cross filesystems.",
+                ohmydisk_core::AUTO_SCAN_WORKER_CAP,
+                ohmydisk_core::MAX_SCAN_WORKERS
+            ),
+            json!({"root_path":string,"workers":{"type":"integer","minimum":1,"maximum":ohmydisk_core::MAX_SCAN_WORKERS},"request_key":string}),
             vec!["root_path", "request_key"],
             false,
             false,
@@ -266,6 +270,26 @@ fn tools() -> Vec<Tool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scan_schema_keeps_auto_optional_and_manual_range_in_sync() {
+        let tool = tools()
+            .into_iter()
+            .find(|tool| tool.name == "omd_start_scan")
+            .unwrap();
+        let value = serde_json::to_value(tool).unwrap();
+        assert_eq!(value["inputSchema"]["properties"]["workers"]["minimum"], 1);
+        assert_eq!(
+            value["inputSchema"]["properties"]["workers"]["maximum"],
+            ohmydisk_core::MAX_SCAN_WORKERS
+        );
+        assert!(
+            !value["inputSchema"]["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("workers"))
+        );
+    }
 
     fn legacy_query_response() -> Value {
         // v0.1.2 query_index::response plus engine's known_stale annotation:
