@@ -2,8 +2,9 @@
 
 `scan_bench.py` uses a separate diagnostic runner that calls the core scanner and
 `NativePlatform` directly. It excludes IPC, service persistence and GUI work.
-The current runner uses Tokio and four directory workers by default, with a
-shared filesystem budget of four. The runtime uses two executor threads;
+The current runner uses Tokio and resolves its default directory workers with
+Auto (`min(available_parallelism, 4)`), with an isolated filesystem budget equal
+to that resolved count. The runtime uses two executor threads;
 blocking directory workers are independently limited by the requested scan budget.
 Python 3.11 or newer is sufficient; no Python packages are required.
 
@@ -115,18 +116,20 @@ mode; `default` means the runner's default implementation, which depends on its
 version and platform.
 
 Scan execution is also configured independently for each binary. Candidate
-`--workers {1,2,4,8}` selects bounded asynchronous traversal, while `--serial`
+`--workers N` accepts integers from 1 to 64 and selects bounded asynchronous traversal, while `--serial`
 selects the synchronous reference scanner in the same current executable.
-Reference selection uses `--reference-workers {1,2,4,8}` or `--reference-serial`.
+Reference selection uses `--reference-workers N` (1–64) or `--reference-serial`.
 The two options for each role are mutually exclusive. Native occupancy sampling
 and per-file private-size measurement remain enabled in both serial and async
 modes, including when portable enumeration is selected.
 
 Omitting these options adds no execution argument to that runner. This keeps
 frozen older runners compatible: do not select workers or serial explicitly for
-an old executable. The current executable defaults to async/four workers; an old
-executable retains its historical default. Binary and method metadata record
-`runner_default`, `async` or `serial`, the declared workers and the exact fixed
+an old executable. An old executable retains its historical default. The current
+async default resolves Auto
+(`min(available_parallelism, 4)`); explicit `--workers N` bypasses that default.
+Binary and method metadata record `runner_default`, `async` or `serial`, the
+declared workers and the exact fixed
 execution arguments. Current runner results also report their actual `scan_mode`
 and `scan_workers`; those fields are null for frozen runners that omit them.
 
@@ -149,6 +152,35 @@ traversal concurrency. Directory
 parallelism can overlap sibling I/O; a single wide directory or a strict deep
 chain may have little available parallel work. Queue and runtime overhead can
 make some shapes slower, so report each fixture separately.
+
+For a balanced three-way comparison of four workers, eight workers and the
+runner's actual `std::thread::available_parallelism()` count:
+
+```sh
+cargo build --release -p ohmydisk-platform --example scan-bench
+python3 benchmarks/worker_matrix.py \
+  --binary target/release/examples/scan-bench \
+  --iterations 12 --warmups 3 --include-large-directory \
+  --output benchmark-output/worker-matrix.json
+```
+
+This harness accepts only generated fixtures. Each measured block runs every
+permutation of the three configurations, balancing positions and directed
+neighbours; twelve trials run every permutation twice. Each configuration has
+three cyclically ordered warmups. Independent inventory validates every run,
+the logical/allocated fingerprint must match across configurations, and a
+postflight inventory checks that the fixture stayed unchanged. Occupancy
+fingerprints report stability separately: APFS allocation and external snapshots
+can change private size without changing the files. CPU counts above the core
+maximum are explicitly recorded and clamped to 64.
+
+The matrix uses a per-scan filesystem budget equal to the selected worker count,
+so CPU-sized experiments are not silently capped by the service's shared budget.
+It measures warm-cache core scans, not simultaneous service scans or real user
+directories. RSS is the process high-water mark when scanning returns; optional
+`scan_cpu_ms` measures aggregate user plus system CPU time over the same scan
+interval. System load snapshots contain only aggregate values, never process
+names or command lines. See [the measured 4/8/18 comparison](PERFORMANCE-AUTO-2026-11-02.md).
 
 To isolate native bulk enumeration from the traversal algorithm, compare the same
 new executable with its portable mode:
@@ -248,6 +280,8 @@ ohmydisk-scan-bench <absolute-root> --output <temporary-json> --cancel-after-ms 
 # Current runners additionally support these mutually exclusive execution flags:
 ohmydisk-scan-bench <absolute-root> --output <temporary-json> --workers 4
 ohmydisk-scan-bench <absolute-root> --output <temporary-json> --serial
+# Aggregate hardware metadata, without opening a scan root:
+ohmydisk-scan-bench --hardware-info
 ```
 
 It must return success after writing a JSON object with these fields:

@@ -307,6 +307,12 @@ def run(binary, test_trash, service_mode="auto"):
             assert set(capabilities["size_metrics"]) == {"logical", "allocated", "attributed"}, capabilities
             assert capabilities["default_display_metric"] == "attributed", capabilities
             assert capabilities["legacy_query_default"] == "logical", capabilities
+            concurrency = capabilities["scan_concurrency"]
+            assert concurrency["default_mode"] == "auto", concurrency
+            assert concurrency["directory_workers"] == min(concurrency["available_parallelism"], concurrency["auto_worker_cap"]), concurrency
+            assert concurrency["global_filesystem_workers"] == min(concurrency["available_parallelism"], concurrency["maximum_directory_workers"]), concurrency
+            worker_schema = definitions["omd_start_scan"]["inputSchema"]["properties"]["workers"]
+            assert worker_schema["minimum"] == 1 and worker_schema["maximum"] == concurrency["maximum_directory_workers"], worker_schema
             for name in ("omd_list_children", "omd_query_nodes"):
                 assert set(definitions[name]["inputSchema"]["properties"]["size_metric"]["enum"]) == {"logical", "allocated", "attributed"}
             assert isinstance(adapter.call("list_sources")["items"], list)
@@ -319,6 +325,21 @@ def run(binary, test_trash, service_mode="auto"):
             adapter = session.adapter()
             assert adapter.call("start_scan", scan_input) == accepted
             adapter.wait(accepted)
+            auto_job = adapter.call("get_job", {"job_id": accepted["job_id"]})
+            assert auto_job["result"]["scan_worker_mode"] == "auto", auto_job
+            assert auto_job["result"]["requested_workers"] is None, auto_job
+            assert auto_job["result"]["scan_workers"] == concurrency["directory_workers"], auto_job
+            assert auto_job["result"]["global_filesystem_workers"] == concurrency["global_filesystem_workers"], auto_job
+            manual_input = {"root_path": str(nested), "workers": concurrency["maximum_directory_workers"], "request_key": "smoke-manual-workers"}
+            manual = adapter.call("start_scan", manual_input)
+            assert adapter.call("start_scan", manual_input) == manual
+            adapter.wait(manual)
+            manual_job = adapter.call("get_job", {"job_id": manual["job_id"]})
+            assert manual_job["state"] == "completed", manual_job
+            assert manual_job["result"]["scan_worker_mode"] == "manual", manual_job
+            assert manual_job["result"]["requested_workers"] == manual_input["workers"], manual_job
+            assert manual_job["result"]["scan_workers"] == manual_input["workers"], manual_job
+            assert manual_job["result"]["effective_scan_worker_limit"] == min(manual_input["workers"], concurrency["global_filesystem_workers"]), manual_job
             scan_id = accepted["scan_id"]
             summary = adapter.call("get_scan", {"scan_id": scan_id})
             assert summary["complete"] is True and "nodes" not in summary, summary
@@ -395,7 +416,7 @@ def run(binary, test_trash, service_mode="auto"):
             assert adapter.call("release_scan", {"scan_id": scan_id})["released"] is True
             adapter.call("get_scan", {"scan_id": scan_id}, error="not_found")
             adapter.close()
-    print(json.dumps({"passed": True, "service_mode": service_mode, "tools": len(tools), "protocol": "2025-11-25", "application_version": capabilities["application_version"], "attributed_queries": True, "hardlink_unknown_checked": hardlink_created, "space_accounting": accounting_status, "permanent_delete": True, "trash_delete": test_trash, "mode_isolation": True, "reconnect_idempotency": True, "refresh_snapshot": True, "elapsed_seconds": round(time.monotonic() - started, 3)}, ensure_ascii=False))
+    print(json.dumps({"passed": True, "service_mode": service_mode, "tools": len(tools), "protocol": "2025-11-25", "application_version": capabilities["application_version"], "scan_concurrency": concurrency, "manual_worker_ceiling_checked": manual_job["result"]["scan_workers"], "attributed_queries": True, "hardlink_unknown_checked": hardlink_created, "space_accounting": accounting_status, "permanent_delete": True, "trash_delete": test_trash, "mode_isolation": True, "reconnect_idempotency": True, "refresh_snapshot": True, "elapsed_seconds": round(time.monotonic() - started, 3)}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

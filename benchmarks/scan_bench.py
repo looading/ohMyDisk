@@ -38,12 +38,15 @@ NUMERIC_FIELDS = (
     "metadata_ms", "progress_callbacks", "first_children_ms", "first_descendants_ms",
     "directory_calls", "directory_ms", "index_build_ms",
     "scan_workers", "space_observation_calls", "space_observation_ms",
+    "available_parallelism", "filesystem_permits", "batch_entries", "batch_bytes",
+    "scan_cpu_ms",
 )
 INTEGER_FIELDS = {
     "snapshot_bytes", "nodes", "files", "directories", "logical_bytes",
     "metadata_calls", "peak_rss_bytes",
     "progress_callbacks",
     "directory_calls", "scan_workers", "space_observation_calls",
+    "available_parallelism", "filesystem_permits", "batch_entries", "batch_bytes",
 }
 REQUIRED_FIELDS = {
     "scan_ms", "serialize_ms", "snapshot_bytes", "nodes", "files", "directories",
@@ -276,6 +279,11 @@ def validated_result(value: object) -> dict:
     if not isinstance(digest, str) or re.fullmatch(r"[0-9a-fA-F]{64}", digest) is None:
         raise BenchError("Runner validation_digest must be a SHA-256 hex string")
     result["validation_digest"] = digest.lower()
+    occupancy = value.get("occupancy_digest")
+    if occupancy is not None and (not isinstance(occupancy, str)
+            or re.fullmatch(r"[0-9a-fA-F]{64}", occupancy) is None):
+        raise BenchError("Runner occupancy_digest must be a SHA-256 hex string")
+    result["occupancy_digest"] = occupancy.lower() if occupancy is not None else None
     mode = value.get("scan_mode")
     if mode is not None and mode not in ("async", "serial"):
         raise BenchError("Runner scan_mode must be async or serial")
@@ -352,6 +360,17 @@ def execution_arguments(workers: int | None = None, serial: bool = False) -> lis
     if serial:
         return ["--serial"]
     return ["--workers", str(workers)] if workers is not None else []
+
+
+def worker_count(value: str) -> int:
+    """Match the core scanner limit without restricting CPU-count experiments."""
+    try:
+        count = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("workers must be an integer from 1 to 64") from None
+    if not 1 <= count <= 64:
+        raise argparse.ArgumentTypeError("workers must be an integer from 1 to 64")
+    return count
 
 
 def execution_metadata(workers: int | None = None, serial: bool = False) -> dict:
@@ -493,11 +512,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reference-enumeration", choices=("default", "portable"), default="default",
                         help="Reference enumeration mode; default adds no runner argument")
     candidate_execution = parser.add_mutually_exclusive_group()
-    candidate_execution.add_argument("--workers", type=int, choices=(1, 2, 4, 8),
+    candidate_execution.add_argument("--workers", type=worker_count,
                                      help="Candidate async worker count; omitted adds no runner flag")
     candidate_execution.add_argument("--serial", action="store_true", help="Candidate serial scan; requires a current runner")
     reference_execution = parser.add_mutually_exclusive_group()
-    reference_execution.add_argument("--reference-workers", type=int, choices=(1, 2, 4, 8),
+    reference_execution.add_argument("--reference-workers", type=worker_count,
                                      help="Reference async worker count; omitted preserves frozen runners")
     reference_execution.add_argument("--reference-serial", action="store_true", help="Reference serial scan; requires a current runner")
     selection = parser.add_mutually_exclusive_group()

@@ -28,6 +28,8 @@ Extract the archive, then open `OhMyDisk.app` on macOS or `ohmydisk.exe` on Wind
 - Manage disks and chosen folders in one list: view results, rescan, or remove a custom entry. Repeated folder paths share one entry; removing an entry keeps its files.
 - Track and cancel background jobs. GUI and stdio MCP share the same local service.
 
+Scanning uses Auto concurrency: available CPU parallelism capped at 4 directory workers. MCP callers can set `workers` from 1 to 64; all scans share a CPU-based filesystem budget capped at 64. See the [4/8/CPU benchmark and policy](benchmarks/PERFORMANCE-AUTO-2026-11-02.md) for the measurements and tradeoffs.
+
 The capacity view accounts for filesystem capacity as available space, confirmed file usage, and shared/system/unattributed space. Logical file sizes remain available in details and the API; sparse files and shared blocks do not inflate the chart beyond disk capacity. Unknown measurements stay marked as unknown.
 
 Scans do not follow symbolic links, junctions, or unknown reparse points, and do not elevate privileges automatically. Incompletely scanned directories cannot be cleaned as complete directories. Confirmed usage is not a promise of space recovered; moving files to trash may leave available capacity unchanged.

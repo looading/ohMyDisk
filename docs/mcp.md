@@ -216,10 +216,30 @@ R：共享、系统及未归属空间
 同一快照的冷读取合并为一次解码和索引构建，已缓存的其他快照仍可查询。快照、索引和容量账本都保留扫描时的状态；执行清理后的刷新会生成新的快照。
 
 
-`omd_start_scan` 可选 `workers`（1–8）控制目录任务上限。默认 4，多个扫描共享
-全局 8 个文件系统许可；不会按文件创建任务。更多 worker 不保证所有目录结构都更快，
-单个宽目录、深链目录和元数据热缓存场景可以选择较小值。作业结果的 `scan_workers`
-记录实际配置上限，活跃任务数量仍由目录树及全局预算决定。
+`omd_start_scan` 省略 `workers` 时使用 **Auto**：`min(可用 CPU 并行度, 4)`。
+手动指定时接受整数 **1–64**。服务启动时读取可用 CPU 并行度，查询失败时使用 1；
+所有扫描共享 `min(可用 CPU 并行度, 64)` 个文件系统许可，不会按扫描叠加预算，
+也不会按文件创建任务。`omd_get_capabilities.scan_concurrency` 返回当前服务的默认值、
+可用并行度、手动上限和全局预算。客户端连接到已运行的旧版后台时，需重启后台后才会使用新策略。
+
+例如在 18 个可用 CPU 的机器上，Auto 为 4、共享预算为 18。目录密集的任务可以手动指定
+`"workers": 8`；手动指定 64 仍受共享预算 18 限制。手动值是单次扫描的上限，
+活跃任务数还取决于目录树和其他扫描。需要 Auto 时省略参数，不传字符串 `"auto"`。
+
+`omd_get_job.result` 从作业接受时就记录以下配置，完成后继续保留：
+
+| 字段 | 含义 |
+|---|---|
+| `scan_worker_mode` | `auto` 或 `manual` |
+| `requested_workers` | 手动请求的值；Auto 为 `null` |
+| `scan_workers` | 本次扫描选定的 worker 上限 |
+| `effective_scan_worker_limit` | 单次上限与共享预算的较小值；不代表实测峰值 |
+| `global_filesystem_workers` | 所有扫描共用的文件系统许可数 |
+| `available_parallelism` | 服务启动时读取的可用 CPU 并行度 |
+
+默认上限 4 是桌面资源占用的取舍：18-worker 的小文件样本耗时更长，CPU 时间接近
+4-worker 的四倍；目录密集样本则适合手动增加并发。方法、原始数据和限制见
+[4／8／CPU 三路基准](../benchmarks/PERFORMANCE-AUTO-2026-11-02.md)。
 
 
 查询响应就地返回 `size_semantics`、`measurement_status`、`reconciliation_status`

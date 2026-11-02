@@ -1,6 +1,6 @@
 //! Diagnostic release runner. Fixture creation, hashing and queries are outside scan_ms.
 use ohmydisk_core::{
-    DirectoryEvent, Platform, SpaceObservation,
+    DirectoryEvent, MAX_SCAN_WORKERS, Platform, SpaceObservation,
     model::*,
     scan_async::{ScanOptions, scan_async},
 };
@@ -153,6 +153,17 @@ fn digest(snapshot: &Snapshot) -> Result<String, Box<dyn std::error::Error>> {
     ))
 }
 
+fn occupancy_digest(snapshot: &Snapshot) -> Result<String, Box<dyn std::error::Error>> {
+    let root = snapshot.root_path.to_path()?;
+    let mut nodes = snapshot
+        .nodes
+        .iter()
+        .map(|node| Ok((relative(&node.path, &root)?, &node.space_usage)))
+        .collect::<Result<Vec<_>, AppError>>()?;
+    nodes.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(&nodes)?)))
+}
+
 #[cfg(unix)]
 fn peak_rss() -> Option<u64> {
     let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
@@ -176,18 +187,57 @@ fn peak_rss() -> Option<u64> {
     None
 }
 
+#[cfg(unix)]
+fn process_cpu_ms() -> Option<f64> {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+    // SAFETY: getrusage initializes the exact writable rusage buffer on success.
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: the matching getrusage call succeeded.
+    let usage = unsafe { usage.assume_init() };
+    Some(
+        (usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) as f64 * 1000.0
+            + (usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) as f64 / 1000.0,
+    )
+}
+#[cfg(not(unix))]
+fn process_cpu_ms() -> Option<f64> {
+    None
+}
+
+fn worker_count(value: &str) -> Result<usize, &'static str> {
+    value
+        .parse::<usize>()
+        .ok()
+        .filter(|count| (1..=MAX_SCAN_WORKERS).contains(count))
+        .ok_or("Expected an integer from 1 to 64 workers")
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut arguments = std::env::args_os().skip(1);
-    let root = PathBuf::from(
-        arguments
-            .next()
-            .ok_or("Expected root --output JSON [--cancel-after-ms N]")?,
-    );
+    let first = arguments
+        .next()
+        .ok_or("Expected root --output JSON [--cancel-after-ms N]")?;
+    let available_parallelism =
+        std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    if first == "--hardware-info" {
+        if arguments.next().is_some() {
+            return Err("--hardware-info takes no additional arguments".into());
+        }
+        println!(
+            "{}",
+            serde_json::json!({"available_parallelism": available_parallelism,
+                "max_scan_workers": MAX_SCAN_WORKERS, "runtime_worker_threads": 2})
+        );
+        return Ok(());
+    }
+    let root = PathBuf::from(first);
     let mut output = None;
     let mut cancel_after = None;
     let mut portable = false;
     let mut serial = false;
-    let mut workers = 4;
+    let mut workers = ScanOptions::default().workers;
     let mut workers_explicit = false;
     while let Some(flag) = arguments.next() {
         match flag.to_str() {
@@ -209,21 +259,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Some("--portable-enumeration") => portable = true,
             Some("--serial") => serial = true,
             Some("--workers") => {
-                workers = arguments
-                    .next()
-                    .ok_or("Expected worker count")?
-                    .to_str()
-                    .ok_or("Invalid worker count")?
-                    .parse::<usize>()?;
+                workers = worker_count(
+                    arguments
+                        .next()
+                        .ok_or("Expected worker count")?
+                        .to_str()
+                        .ok_or("Invalid worker count")?,
+                )?;
                 workers_explicit = true;
             }
             _ => return Err("Unknown benchmark option".into()),
         }
     }
     let output = output.ok_or("Expected --output")?;
-    if ![1, 2, 4, 8].contains(&workers) {
-        return Err("Expected 1, 2, 4 or 8 workers".into());
-    }
     if serial && workers_explicit {
         return Err("Use --serial without --workers".into());
     }
@@ -261,8 +309,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
         })
     });
+    let cpu_started = process_cpu_ms();
     let started = Instant::now();
-    let (scan_result, ended, callbacks) = if let Some(runtime) = &runtime {
+    let (scan_result, ended, cpu_ended, callbacks) = if let Some(runtime) = &runtime {
         runtime.block_on(async {
             let (progress, mut changes) = tokio::sync::watch::channel(ScanProgress::default());
             // Count delivered watch changes only; the observer does no path
@@ -288,11 +337,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             )
             .await;
             let ended = Instant::now();
+            let cpu_ended = process_cpu_ms();
             match observer.await {
-                Ok(callbacks) => (result, ended, callbacks),
+                Ok(callbacks) => (result, ended, cpu_ended, callbacks),
                 Err(error) => (
                     Err(AppError::new("worker_panic", error.to_string())),
                     ended,
+                    cpu_ended,
                     0,
                 ),
             }
@@ -302,9 +353,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let result = ohmydisk_core::scan::scan(&root, platform.as_ref(), &cancelled, &mut |_| {
             callbacks += 1
         });
-        (result, Instant::now(), callbacks)
+        (result, Instant::now(), process_cpu_ms(), callbacks)
     };
     let scan_ms = ended.duration_since(started).as_secs_f64() * 1000.0;
+    let scan_cpu_ms = cpu_ended.zip(cpu_started).map(|(end, start)| end - start);
     let peak_rss_bytes = peak_rss();
     let _ = stop.send(());
     if let Some(timer) = timer {
@@ -358,6 +410,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let first_descendants_ms = query_start.elapsed().as_secs_f64() * 1000.0;
     let report = serde_json::json!({
         "scan_mode":if serial {"serial"} else {"async"},"scan_workers":if serial {1} else {workers},
+        "available_parallelism":available_parallelism,
+        "filesystem_permits":if serial {1} else {workers},
+        "batch_entries":128,"batch_bytes":256*1024,
+        "scan_cpu_ms":scan_cpu_ms,
         "space_observation_calls":platform.observation_calls.load(Ordering::Relaxed),
         "space_observation_ms":platform.observation_nanos.load(Ordering::Relaxed) as f64/1_000_000.0,
         "scan_ms":scan_ms,"serialize_ms":serialize_ms,"snapshot_bytes":snapshot_bytes,"nodes":snapshot.nodes.len(),
@@ -368,7 +424,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "directory_calls":platform.directory_calls.load(Ordering::Relaxed),"directory_ms":platform.directory_nanos.load(Ordering::Relaxed) as f64/1_000_000.0,
         "progress_callbacks":callbacks,"peak_rss_bytes":peak_rss_bytes,"cancel_latency_ms":cancel_latency_ms,
         "index_build_ms":index_build_ms,"first_children_ms":first_children_ms,"first_descendants_ms":first_descendants_ms,"issue_count":snapshot.issues.len(),
-        "validation_digest":digest(&snapshot)?,"digest_version":1
+        "validation_digest":digest(&snapshot)?,"digest_version":1,
+        "occupancy_digest":occupancy_digest(&snapshot)?
     });
     std::fs::write(output, serde_json::to_vec_pretty(&report)?)?;
     Ok(())
@@ -377,5 +434,20 @@ fn main() {
     if let Err(error) = run() {
         eprintln!("Benchmark failed: {error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::worker_count;
+
+    #[test]
+    fn diagnostic_workers_match_core_range_including_cpu_counts() {
+        for count in [1, 2, 4, 8, 18, 64] {
+            assert_eq!(worker_count(&count.to_string()), Ok(count));
+        }
+        for invalid in ["0", "65", "-1", "1.5", "auto", "18446744073709551616"] {
+            assert!(worker_count(invalid).is_err());
+        }
     }
 }

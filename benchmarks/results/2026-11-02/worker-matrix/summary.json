@@ -1,0 +1,841 @@
+{
+  "schema_version": 1,
+  "input_sha256": "9bc73553ee3ceae728e0935c4a515e48ed1590a42b562a42a74613cf9a77eb67",
+  "binary_sha256": "180883c5f855106fb2799dbd3248f9c765ca67f707cfbf148c4a293b9126fe53",
+  "available_parallelism": 18,
+  "standard_five_cases_equal_weight_paired_ratio_geometric_mean": {
+    "workers-8_over_workers-4": 1.0152731775413426,
+    "workers-cpu_over_workers-4": 0.9632872391312629,
+    "workers-cpu_over_workers-8": 0.9568489510132987
+  },
+  "fixtures": [
+    {
+      "case": "small-files",
+      "variants": {
+        "workers-4": {
+          "workers": 4,
+          "scan_ms": {
+            "samples": 12,
+            "median": 393.6090415,
+            "p95": 424.085291,
+            "min": 375.651334,
+            "max": 424.085291
+          },
+          "scan_cpu_ms": {
+            "samples": 12,
+            "median": 1520.5555,
+            "p95": 1625.0929999999998,
+            "min": 1471.384,
+            "max": 1625.0929999999998
+          },
+          "mean_cpu_cores": {
+            "samples": 12,
+            "median": 3.855747104171367,
+            "p95": 3.9229220093405006,
+            "min": 3.8212406175553744,
+            "max": 3.9229220093405006
+          },
+          "peak_rss_mib": {
+            "samples": 12,
+            "median": 75.4296875,
+            "p95": 76.59375,
+            "min": 74.265625,
+            "max": 76.59375
+          }
+        },
+        "workers-8": {
+          "workers": 8,
+          "scan_ms": {
+            "samples": 12,
+            "median": 472.434042,
+            "p95": 504.605459,
+            "min": 368.107334,
+            "max": 504.605459
+          },
+          "scan_cpu_ms": {
+            "samples": 12,
+            "median": 3451.036,
+            "p95": 3640.735,
+            "min": 2770.184,
+            "max": 3640.735
+          },
+          "mean_cpu_cores": {
+            "samples": 12,
+            "median": 7.294311796622954,
+            "p95": 7.525478968044686,
+            "min": 7.215013105912515,
+            "max": 7.525478968044686
+          },
+          "peak_rss_mib": {
+            "samples": 12,
+            "median": 77.21875,
+            "p95": 77.859375,
+            "min": 76.65625,
+            "max": 77.859375
+          }
+        },
+        "workers-cpu": {
+          "workers": 18,
+          "scan_ms": {
+            "samples": 12,
+            "median": 429.8729165,
+            "p95": 465.25345899999996,
+            "min": 410.533334,
+            "max": 465.25345899999996
+          },
+          "scan_cpu_ms": {
+            "samples": 12,
+            "median": 6022.7384999999995,
+            "p95": 6205.903,
+            "min": 5906.410000000001,
+            "max": 6205.903
+          },
+          "mean_cpu_cores": {
+            "samples": 12,
+            "median": 13.909147863604428,
+            "p95": 14.506478540911855,
+            "min": 12.946055281235427,
+            "max": 14.506478540911855
+          },
+          "peak_rss_mib": {
+            "samples": 12,
+            "median": 82.71875,
+            "p95": 87.125,
+            "min": 81.140625,
+            "max": 87.125
+          }
+        }
+      },
+      "paired_ratios": {
+        "workers-8_over_workers-4": {
+          "median": 1.1881115288862523,
+          "p95": 1.3016983136814841,
+          "samples": 12
+        },
+        "workers-cpu_over_workers-4": {
+          "median": 1.0916842913565559,
+          "p95": 1.206871686498523,
+          "samples": 12
+        },
+        "workers-cpu_over_workers-8": {
+          "median": 0.9114629126472751,
+          "p95": 1.2306099340036512,
+          "samples": 12
+        }
+      },
+      "validated": true,
+      "fixture_unchanged": true,
+      "occupancy_stable": true,
+      "load_before": {
+        "captured_at_utc": "2026-11-02T08:30:02.027206+00:00",
+        "system_load_average_1_5_15m": [
+          8.2275390625,
+          5.49169921875,
+          4.60791015625
+        ],
+        "sum_process_cpu_percent_ps_snapshot": 528.3,
+        "cpu_snapshot_note": "ps CPU percentages have OS-specific averaging; 100% means one core"
+      },
+      "load_after": {
+        "captured_at_utc": "2026-11-02T08:30:31.760257+00:00",
+        "system_load_average_1_5_15m": [
+          10.61181640625,
+          6.28271484375,
+          4.921875
+        ],
+        "sum_process_cpu_percent_ps_snapshot": 385.8,
+        "cpu_snapshot_note": "ps CPU percentages have OS-specific averaging; 100% means one core"
+      }
+    },
+    {
+      "case": "wide-directory",
+      "variants": {
+        "workers-4": {
+          "workers": 4,
+          "scan_ms": {
+            "samples": 12,
+            "median": 214.37014549999998,
+            "p95": 224.9125,
+            "min": 202.999584,
+            "max": 224.9125
+          },
+          "scan_cpu_ms": {
+            "samples": 12,
+            "median": 231.6085,
+            "p95": 242.30100000000002,
+            "min": 214.302,
+            "max": 242.30100000000002
+          },
+          "mean_cpu_cores": {
+            "samples": 12,
+            "median": 1.0582401803510648,
+            "p95": 1.0840443765024852,
+            "min": 1.0491261690411344,
+            "max": 1.0840443765024852
+          },
+          "peak_rss_mib": {
+            "samples": 12,
+            "median": 40.7109375,
+            "p95": 40.765625,
+            "min": 40.625,
+            "max": 40.765625
+          }
+        },
+        "workers-8": {
+          "workers": 8,
+          "scan_ms": {
+            "samples": 12,
+            "median": 217.3564585,
+            "p95": 242.211,
+            "min": 201.659125,
+            "max": 242.211
+          },
+          "scan_cpu_ms": {
+            "samples": 12,
+            "median": 230.68200000000002,
+            "p95": 253.68,
+            "min": 213.173,
+            "max": 253.68
+          },
+          "mean_cpu_cores": {
+            "samples": 12,
+            "median": 1.0584063174393294,
+            "p95": 1.0787283248790809,
+            "min": 1.043806265152467,
+            "max": 1.0787283248790809
+          },
+          "peak_rss_mib": {
+            "samples": 12,
+            "median": 40.7109375,
+            "p95": 41.03125,
+            "min": 40.640625,
+            "max": 41.03125
+          }
+        },
+        "workers-cpu": {
+          "workers": 18,
+          "scan_ms": {
+            "samples": 12,
+            "median": 214.772375,
+            "p95": 226.92125,
+            "min": 203.946459,
+            "max": 226.92125
+          },
+          "scan_cpu_ms": {
+            "samples": 12,
+            "median": 228.6685,
+            "p95": 239.954,
+            "min": 214.64,
+            "max": 239.954
+          },
+          "mean_cpu_cores": {
+            "samples": 12,
+            "median": 1.0539532094926214,
+            "p95": 1.0803147070353019,
+            "min": 1.0502454797442797,
+            "max": 1.0803147070353019
+          },
+          "peak_rss_mib": {
+            "samples": 12,
+            "median": 40.7109375,
+            "p95": 40.78125,
+            "min": 40.640625,
+            "max": 40.78125
+          }
+        }
+      },
+      "paired_ratios": {
+        "workers-8_over_workers-4": {
+          "median": 1.0239024342810596,
+          "p95": 1.153529674789128,
+          "samples": 12
+        },
+        "workers-cpu_over_workers-4": {
+          "median": 0.9896882885966054,
+          "p95": 1.0991869815851445,
+          "samples": 12
+        },
+        "workers-cpu_over_workers-8": {
+          "median": 1.0203534133395538,
+          "p95": 1.0595243334513131,
+          "samples": 12
+        }
+      },
+      "validated": true,
+      "fixture_unchanged": true,
+      "occupancy_stable": true,
+      "load_before": {
+        "captured_at_utc": "2026-11-02T08:30:45.790181+00:00",
+        "system_load_average_1_5_15m": [
+          13.40576171875,
+          7.1552734375,
+          5.2587890625
+        ],
+        "sum_process_cpu_percent_ps_snapshot": 775.4,
+        "cpu_snapshot_note": "ps CPU percentages have OS-specific averaging; 100% means one core"
+      },
+      "load_after": {
+        "captured_at_utc": "2026-11-02T08:31:01.379121+00:00",
+        "system_load_average_1_5_15m": [
+          12.27685546875,
+          7.22509765625,
+          5.3173828125
+        ],
+        "sum_process_cpu_percent_ps_snapshot": 246.5,
+        "cpu_snapshot_note": "ps CPU percentages have OS-specific averaging; 100% means one core"
+      }
+    },
+    {
+      "case": "deep-tree",
+      "variants": {
+        "workers-4": {
+          "workers": 4,
+          "scan_ms": {
+            "samples": 12,
+            "median": 45.366896,
+            "p95": 49.02675,
+            "min": 44.810500000000005,
+            "max": 49.02675
+          },
+          "scan_cpu_ms": {
+            "samples": 12,
+            "median": 41.519499999999994,
+            "p95": 45.177,
+            "min": 41.024,
+            "max": 45.177
+          },
+          "mean_cpu_cores": {
+            "samples": 12,
+            "median": 0.9166320436334807,
+            "p95": 0.9294473904166839,
+            "min": 0.9065317864750823,
+            "max": 0.9294473904166839
+          },
+          "peak_rss_mib": {
+            "samples": 12,
+            "median": 18.1875,
+            "p95": 18.28125,
+            "min": 18.09375,
+            "max": 18.28125
+          }
+        },
+        "workers-8": {
+          "workers": 8,
+          "scan_ms": {
+            "samples": 12,
+            "median": 45.318208500000004,
+            "p95": 47.729542,
+            "min": 44.482708,
+            "max": 47.729542
+          },
+          "scan_cpu_ms": {
+            "samples": 12,
+            "median": 41.876,
+            "p95": 44.142,
+            "min": 40.79,
+            "max": 44.142
+          },
+          "mean_cpu_cores": {
+            "samples": 12,
+            "median": 0.9175472596136032,
+            "p95": 0.9309691357766887,
+            "min": 0.9078600292227251,
+            "max": 0.9309691357766887
+          },
+          "peak_rss_mib": {
+            "samples": 12,
+            "median": 18.1640625,
+            "p95": 18.34375,
+            "min": 18.09375,
+            "max": 18.34375
+          }
+        },
+        "workers-cpu": {
+          "workers": 18,
+          "scan_ms": {
+            "samples": 12,
+            "median": 45.7845625,
+            "p95": 47.211417,
+            "min": 44.297667,
+            "max": 47.211417
+          },
+          "scan_cpu_ms": {
+            "samples": 12,
+            "median": 41.8115,
+            "p95": 43.26,
+            "min": 40.873000000000005,
+            "max": 43.26
+          },
+          "mean_cpu_cores": {
+            "samples": 12,
+            "median": 0.9154300892412579,
+            "p95": 0.9312808063576941,
+            "min": 0.9044540697754738,
+            "max": 0.9312808063576941
+          },
+          "peak_rss_mib": {
+            "samples": 12,
+            "median": 18.125,
+            "p95": 18.34375,
+            "min": 18.078125,
+            "max": 18.34375
+          }
+        }
+      },
+      "paired_ratios": {
+        "workers-8_over_workers-4": {
+          "median": 0.9964260799207875,
+          "p95": 1.0574137533785282,
+          "samples": 12
+        },
+        "workers-cpu_over_workers-4": {
+          "median": 1.0020234047328747,
+          "p95": 1.041773738313616,
+          "samples": 12
+        },
+        "workers-cpu_over_workers-8": {
+          "median": 1.0033523386189471,
+          "p95": 1.043630699249603,
+          "samples": 12
+        }
+      },
+      "validated": true,
+      "fixture_unchanged": true,
+      "occupancy_stable": true,
+      "load_before": {
+        "captured_at_utc": "2026-11-02T08:31:06.080207+00:00",
+        "system_load_average_1_5_15m": [
+          12.09423828125,
+          7.27099609375,
+          5.3447265625
+        ],
+        "sum_process_cpu_percent_ps_snapshot": 664.9,
+        "cpu_snapshot_note": "ps CPU percentages have OS-specific averaging; 100% means one core"
+      },
+      "load_after": {
+        "captured_at_utc": "2026-11-02T08:31:11.730174+00:00",
+        "system_load_average_1_5_15m": [
+          11.28564453125,
+          7.18310546875,
+          5.32470703125
+        ],
+        "sum_process_cpu_percent_ps_snapshot": 245.3,
+        "cpu_snapshot_note": "ps CPU percentages have OS-specific averaging; 100% means one core"
+      }
+    },
+    {
+      "case": "mixed",
+      "variants": {
+        "workers-4": {
+          "workers": 4,
+          "scan_ms": {
+            "samples": 12,
+            "median": 36.4593125,
+            "p95": 38.365541,
+            "min": 29.100333,
+            "max": 38.365541
+          },
+          "scan_cpu_ms": {
+            "samples": 12,
+            "median": 128.7855,
+            "p95": 142.174,
+            "min": 109.26,
+            "max": 142.174
+          },
+          "mean_cpu_cores": {
+            "samples": 12,
+            "median": 3.695077695432213,
+            "p95": 3.75459621029079,
+            "min": 3.498898557109814,
+            "max": 3.75459621029079
+          },
+          "peak_rss_mib": {
+            "samples": 12,
+            "median": 16.234375,
+            "p95": 16.625,
+            "min": 16.046875,
+            "max": 16.625
+          }
+        },
+        "workers-8": {
+          "workers": 8,
+          "scan_ms": {
+            "samples": 12,
+            "median": 39.558082999999996,
+            "p95": 41.142666,
+            "min": 30.383750000000003,
+            "max": 41.142666
+          },
+          "scan_cpu_ms": {
+            "samples": 12,
+            "median": 271.50749999999994,
+            "p95": 283.707,
+            "min": 221.523,
+            "max": 283.707
+          },
+          "mean_cpu_cores": {
+            "samples": 12,
+            "median": 6.950662307533753,
+            "p95": 7.290838030197062,
+            "min": 6.58899152048247,
+            "max": 7.290838030197062
+          },
+          "peak_rss_mib": {
+            "samples": 12,
+            "median": 16.921875,
+            "p95": 17.109375,
+            "min": 16.546875,
+            "max": 17.109375
+          }
+        },
+        "workers-cpu": {
+          "workers": 18,
+          "scan_ms": {
+            "samples": 12,
+            "median": 35.8035835,
+            "p95": 36.184959,
+            "min": 26.146083,
+            "max": 36.184959
+          },
+          "scan_cpu_ms": {
+            "samples": 12,
+            "median": 485.3795,
+            "p95": 495.301,
+            "min": 350.029,
+            "max": 495.301
+          },
+          "mean_cpu_cores": {
+            "samples": 12,
+            "median": 13.663493980413982,
+            "p95": 15.12207392594906,
+            "min": 12.77787056176904,
+            "max": 15.12207392594906
+          },
+          "peak_rss_mib": {
+            "samples": 12,
+            "median": 18.3984375,
+            "p95": 19.78125,
+            "min": 17.328125,
+            "max": 19.78125
+          }
+        }
+      },
+      "paired_ratios": {
+        "workers-8_over_workers-4": {
+          "median": 1.080555112030501,
+          "p95": 1.2000870282492708,
+          "samples": 12
+        },
+        "workers-cpu_over_workers-4": {
+          "median": 0.9589237759392509,
+          "p95": 1.0769145857702949,
+          "samples": 12
+        },
+        "workers-cpu_over_workers-8": {
+          "median": 0.8736197807979048,
+          "p95": 0.9225504848757305,
+          "samples": 12
+        }
+      },
+      "validated": true,
+      "fixture_unchanged": true,
+      "occupancy_stable": true,
+      "load_before": {
+        "captured_at_utc": "2026-11-02T08:31:13.877777+00:00",
+        "system_load_average_1_5_15m": [
+          11.28564453125,
+          7.18310546875,
+          5.32470703125
+        ],
+        "sum_process_cpu_percent_ps_snapshot": 1049.2,
+        "cpu_snapshot_note": "ps CPU percentages have OS-specific averaging; 100% means one core"
+      },
+      "load_after": {
+        "captured_at_utc": "2026-11-02T08:31:17.335864+00:00",
+        "system_load_average_1_5_15m": [
+          10.7822265625,
+          7.146484375,
+          5.32275390625
+        ],
+        "sum_process_cpu_percent_ps_snapshot": 210.1,
+        "cpu_snapshot_note": "ps CPU percentages have OS-specific averaging; 100% means one core"
+      }
+    },
+    {
+      "case": "directory-heavy",
+      "variants": {
+        "workers-4": {
+          "workers": 4,
+          "scan_ms": {
+            "samples": 12,
+            "median": 656.7835625,
+            "p95": 721.9790409999999,
+            "min": 620.814708,
+            "max": 721.9790409999999
+          },
+          "scan_cpu_ms": {
+            "samples": 12,
+            "median": 1327.7730000000001,
+            "p95": 1514.842,
+            "min": 1276.662,
+            "max": 1514.842
+          },
+          "mean_cpu_cores": {
+            "samples": 12,
+            "median": 2.033267660361907,
+            "p95": 2.1126692644904126,
+            "min": 1.9711929804771327,
+            "max": 2.1126692644904126
+          },
+          "peak_rss_mib": {
+            "samples": 12,
+            "median": 26.1953125,
+            "p95": 26.34375,
+            "min": 25.671875,
+            "max": 26.34375
+          }
+        },
+        "workers-8": {
+          "workers": 8,
+          "scan_ms": {
+            "samples": 12,
+            "median": 533.161229,
+            "p95": 611.935417,
+            "min": 514.30575,
+            "max": 611.935417
+          },
+          "scan_cpu_ms": {
+            "samples": 12,
+            "median": 1649.868,
+            "p95": 1797.555,
+            "min": 1563.868,
+            "max": 1797.555
+          },
+          "mean_cpu_cores": {
+            "samples": 12,
+            "median": 3.0783891527300256,
+            "p95": 3.3230701058167367,
+            "min": 2.937491359484427,
+            "max": 3.3230701058167367
+          },
+          "peak_rss_mib": {
+            "samples": 12,
+            "median": 26.4296875,
+            "p95": 27.03125,
+            "min": 25.8125,
+            "max": 27.03125
+          }
+        },
+        "workers-cpu": {
+          "workers": 18,
+          "scan_ms": {
+            "samples": 12,
+            "median": 522.3780835,
+            "p95": 541.378709,
+            "min": 502.72345799999994,
+            "max": 541.378709
+          },
+          "scan_cpu_ms": {
+            "samples": 12,
+            "median": 1618.1535,
+            "p95": 1720.609,
+            "min": 1584.566,
+            "max": 1720.609
+          },
+          "mean_cpu_cores": {
+            "samples": 12,
+            "median": 3.119254309354104,
+            "p95": 3.302035284374988,
+            "min": 2.997783202442119,
+            "max": 3.302035284374988
+          },
+          "peak_rss_mib": {
+            "samples": 12,
+            "median": 26.8515625,
+            "p95": 26.953125,
+            "min": 26.421875,
+            "max": 26.953125
+          }
+        }
+      },
+      "paired_ratios": {
+        "workers-8_over_workers-4": {
+          "median": 0.8235818549492755,
+          "p95": 0.9365491752330576,
+          "samples": 12
+        },
+        "workers-cpu_over_workers-4": {
+          "median": 0.7989536606313767,
+          "p95": 0.851746596021999,
+          "samples": 12
+        },
+        "workers-cpu_over_workers-8": {
+          "median": 0.9839009404689918,
+          "p95": 1.0313452865669663,
+          "samples": 12
+        }
+      },
+      "validated": true,
+      "fixture_unchanged": true,
+      "occupancy_stable": true,
+      "load_before": {
+        "captured_at_utc": "2026-11-02T08:31:23.342661+00:00",
+        "system_load_average_1_5_15m": [
+          11.19970703125,
+          7.29345703125,
+          5.38525390625
+        ],
+        "sum_process_cpu_percent_ps_snapshot": 556.8,
+        "cpu_snapshot_note": "ps CPU percentages have OS-specific averaging; 100% means one core"
+      },
+      "load_after": {
+        "captured_at_utc": "2026-11-02T08:31:54.360762+00:00",
+        "system_load_average_1_5_15m": [
+          11.43408203125,
+          7.763671875,
+          5.62353515625
+        ],
+        "sum_process_cpu_percent_ps_snapshot": 352.6,
+        "cpu_snapshot_note": "ps CPU percentages have OS-specific averaging; 100% means one core"
+      }
+    },
+    {
+      "case": "directory-heavy-large",
+      "variants": {
+        "workers-4": {
+          "workers": 4,
+          "scan_ms": {
+            "samples": 12,
+            "median": 2726.06225,
+            "p95": 3768.92175,
+            "min": 2545.812834,
+            "max": 3768.92175
+          },
+          "scan_cpu_ms": {
+            "samples": 12,
+            "median": 5758.33,
+            "p95": 7449.241,
+            "min": 5434.697,
+            "max": 7449.241
+          },
+          "mean_cpu_cores": {
+            "samples": 12,
+            "median": 2.124290003782043,
+            "p95": 2.156767657278328,
+            "min": 1.9764912869310698,
+            "max": 2.156767657278328
+          },
+          "peak_rss_mib": {
+            "samples": 12,
+            "median": 74.40625,
+            "p95": 75.859375,
+            "min": 62.796875,
+            "max": 75.859375
+          }
+        },
+        "workers-8": {
+          "workers": 8,
+          "scan_ms": {
+            "samples": 12,
+            "median": 2193.9617915,
+            "p95": 2580.679208,
+            "min": 2103.0067090000002,
+            "max": 2580.679208
+          },
+          "scan_cpu_ms": {
+            "samples": 12,
+            "median": 7209.3735,
+            "p95": 7770.816999999999,
+            "min": 6638.179,
+            "max": 7770.816999999999
+          },
+          "mean_cpu_cores": {
+            "samples": 12,
+            "median": 3.2018875502392534,
+            "p95": 3.41063050643156,
+            "min": 3.0111518610723813,
+            "max": 3.41063050643156
+          },
+          "peak_rss_mib": {
+            "samples": 12,
+            "median": 76.2421875,
+            "p95": 77.84375,
+            "min": 74.625,
+            "max": 77.84375
+          }
+        },
+        "workers-cpu": {
+          "workers": 18,
+          "scan_ms": {
+            "samples": 12,
+            "median": 2244.8166245,
+            "p95": 2372.88925,
+            "min": 2124.6314580000003,
+            "max": 2372.88925
+          },
+          "scan_cpu_ms": {
+            "samples": 12,
+            "median": 7072.332,
+            "p95": 7491.579,
+            "min": 6750.378,
+            "max": 7491.579
+          },
+          "mean_cpu_cores": {
+            "samples": 12,
+            "median": 3.167293946469485,
+            "p95": 3.2487153507687556,
+            "min": 3.1132878691616632,
+            "max": 3.2487153507687556
+          },
+          "peak_rss_mib": {
+            "samples": 12,
+            "median": 76.03125,
+            "p95": 78.015625,
+            "min": 74.921875,
+            "max": 78.015625
+          }
+        }
+      },
+      "paired_ratios": {
+        "workers-8_over_workers-4": {
+          "median": 0.8151941019868478,
+          "p95": 0.9338204134307944,
+          "samples": 12
+        },
+        "workers-cpu_over_workers-4": {
+          "median": 0.8350415313102091,
+          "p95": 0.8846897748807563,
+          "samples": 12
+        },
+        "workers-cpu_over_workers-8": {
+          "median": 1.0118329066546,
+          "p95": 1.0938267084182856,
+          "samples": 12
+        }
+      },
+      "validated": true,
+      "fixture_unchanged": true,
+      "occupancy_stable": true,
+      "load_before": {
+        "captured_at_utc": "2026-11-02T08:32:19.750724+00:00",
+        "system_load_average_1_5_15m": [
+          11.67041015625,
+          8.130859375,
+          5.81787109375
+        ],
+        "sum_process_cpu_percent_ps_snapshot": 320.4,
+        "cpu_snapshot_note": "ps CPU percentages have OS-specific averaging; 100% means one core"
+      },
+      "load_after": {
+        "captured_at_utc": "2026-11-02T08:34:22.836010+00:00",
+        "system_load_average_1_5_15m": [
+          22.49169921875,
+          13.84033203125,
+          8.3857421875
+        ],
+        "sum_process_cpu_percent_ps_snapshot": 338.3,
+        "cpu_snapshot_note": "ps CPU percentages have OS-specific averaging; 100% means one core"
+      }
+    }
+  ]
+}
