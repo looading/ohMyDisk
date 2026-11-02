@@ -63,6 +63,9 @@ struct Fake {
     foreign_after_parent: bool,
     read_error: bool,
     read_error_paths: Vec<PathBuf>,
+    metadata_error_paths: Vec<PathBuf>,
+    portable_entries: bool,
+    unknown_hints: bool,
     observations: bool,
     observe_count: AtomicUsize,
     cancel: Option<Arc<AtomicBool>>,
@@ -85,6 +88,9 @@ impl Fake {
             foreign_after_parent: false,
             read_error: false,
             read_error_paths: Vec::new(),
+            metadata_error_paths: Vec::new(),
+            portable_entries: false,
+            unknown_hints: false,
             observations: false,
             observe_count: 0.into(),
             cancel: None,
@@ -109,6 +115,12 @@ impl Drop for Active<'_> {
 }
 impl Platform for Fake {
     fn metadata(&self, path: &Path) -> io::Result<FileInfo> {
+        if self.metadata_error_paths.iter().any(|entry| entry == path) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "not readable",
+            ));
+        }
         let mut metadata = self
             .infos
             .get(path)
@@ -161,8 +173,16 @@ impl Platform for Fake {
                 }
             }
             let metadata = self.infos.get(entry).cloned();
-            let kind_hint = metadata.as_ref().map(|i| i.kind);
-            let info = metadata.filter(|i| i.kind != NodeKind::Directory).map(Ok);
+            let kind_hint = if self.unknown_hints {
+                None
+            } else {
+                metadata.as_ref().map(|i| i.kind)
+            };
+            let info = if self.portable_entries {
+                None
+            } else {
+                metadata.filter(|i| i.kind != NodeKind::Directory).map(Ok)
+            };
             if !visit(DirectoryEvent::Entry(ScanEntry {
                 path: entry.clone(),
                 info,
@@ -237,6 +257,174 @@ async fn run(
     )
     .await
     .expect("scanner did not stop")
+}
+
+async fn run_observing(
+    fake: Arc<Fake>,
+    workers: usize,
+    cancel: Arc<AtomicBool>,
+) -> (Result<Snapshot, AppError>, ScanProgress) {
+    let (progress, changes) = watch::channel(ScanProgress::default());
+    let result = tokio::time::timeout(
+        Duration::from_secs(8),
+        scan_async(
+            fake.root.clone(),
+            fake,
+            cancel,
+            options(workers),
+            Arc::new(Semaphore::new(workers)),
+            progress,
+        ),
+    )
+    .await
+    .expect("scanner did not stop");
+    let latest = changes.borrow().clone();
+    (result, latest)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn progress_counts_directory_work_without_counting_files_or_prewalking() {
+    for (portable_entries, unknown_hints) in [(false, false), (true, false), (true, true)] {
+        let root = tempfile::tempdir().unwrap();
+        let mut fake = Fake::new(root.path().canonicalize().unwrap());
+        fake.portable_entries = portable_entries;
+        fake.unknown_hints = unknown_hints;
+        fake.entry("left", info(NodeKind::Directory, "left", 0));
+        fake.entry("right", info(NodeKind::Directory, "right", 0));
+        fake.entry("left/one", info(NodeKind::File, "one", 11));
+        fake.entry("right/two", info(NodeKind::File, "two", 17));
+        for index in 0..300 {
+            fake.entry(
+                &format!("file-{index}"),
+                info(NodeKind::File, &format!("file-{index}"), 1),
+            );
+        }
+        let fake = Arc::new(fake);
+        let mut serial_updates = Vec::new();
+        let serial =
+            ohmydisk_core::scan::scan(&fake.root, fake.as_ref(), &false.into(), &mut |progress| {
+                serial_updates.push(progress)
+            })
+            .unwrap();
+        assert_eq!(fake.entered.lock().unwrap().len(), 3);
+        fake.entered.lock().unwrap().clear();
+        let (parallel, latest) = run_observing(fake.clone(), 4, Arc::new(false.into())).await;
+        assert!(parallel.unwrap().complete);
+        assert!(serial.complete);
+        assert_eq!(fake.entered.lock().unwrap().len(), 3);
+        assert!(
+            serial_updates
+                .iter()
+                .any(|progress| progress.phase == "reducing")
+        );
+        assert!(serial_updates.windows(2).all(|pair| {
+            pair[0].completion.as_ref().unwrap().percentage
+                <= pair[1].completion.as_ref().unwrap().percentage
+        }));
+        for progress in [serial_updates.last().unwrap(), &latest] {
+            let completion = progress.completion.as_ref().unwrap();
+            assert_eq!(progress.phase, "completed");
+            assert_eq!(completion.discovered_directory_tasks, 3);
+            assert_eq!(completion.completed_directory_tasks, 3);
+            assert_eq!(completion.percentage, 90);
+            assert!(completion.estimated);
+            assert_eq!(progress.files, 302);
+        }
+    }
+}
+
+#[tokio::test]
+async fn rejected_directories_and_read_errors_resolve_each_task_once() {
+    let root = tempfile::tempdir().unwrap();
+    let mut fake = Fake::new(root.path().canonicalize().unwrap());
+    fake.entry("first", info(NodeKind::Directory, "same-directory", 0));
+    fake.entry("alias", info(NodeKind::Directory, "same-directory", 0));
+    let mut foreign = info(NodeKind::Directory, "foreign", 0);
+    foreign.volume_id = "other-volume".into();
+    fake.entry("foreign", foreign);
+    fake.entry("unreadable", info(NodeKind::Directory, "unreadable", 0));
+    fake.entry("partial", info(NodeKind::Directory, "partial", 0));
+    fake.metadata_error_paths.push(fake.root.join("unreadable"));
+    fake.read_error_paths.push(fake.root.join("partial"));
+    let fake = Arc::new(fake);
+    let mut serial_progress = ScanProgress::default();
+    let serial =
+        ohmydisk_core::scan::scan(&fake.root, fake.as_ref(), &false.into(), &mut |progress| {
+            serial_progress = progress
+        })
+        .unwrap();
+    assert_eq!(fake.entered.lock().unwrap().len(), 3);
+    fake.entered.lock().unwrap().clear();
+    let (parallel, latest) = run_observing(fake.clone(), 4, Arc::new(false.into())).await;
+    let parallel = parallel.unwrap();
+    assert_eq!(fake.entered.lock().unwrap().len(), 3);
+    for snapshot in [&serial, &parallel] {
+        assert!(!snapshot.complete);
+        assert!(!snapshot.cancelled);
+        assert_eq!(snapshot.issues.len(), 4);
+    }
+    for progress in [&serial_progress, &latest] {
+        let completion = progress.completion.as_ref().unwrap();
+        assert_eq!(completion.discovered_directory_tasks, 6);
+        assert_eq!(completion.completed_directory_tasks, 6);
+        assert_eq!(completion.percentage, 90);
+        assert!(completion.estimated);
+    }
+}
+
+#[tokio::test]
+async fn cancellation_does_not_resolve_an_interrupted_directory_or_enter_reducing() {
+    for asynchronous in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let mut fake = Fake::new(root.path().canonicalize().unwrap());
+        for index in 0..1000 {
+            fake.entry(
+                &format!("file-{index}"),
+                info(NodeKind::File, &format!("file-{index}"), 1),
+            );
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        fake.cancel = Some(cancel.clone());
+        let fake = Arc::new(fake);
+        let (snapshot, latest) = if asynchronous {
+            let (result, latest) = run_observing(fake.clone(), 4, cancel.clone()).await;
+            (result.unwrap(), latest)
+        } else {
+            let mut latest = ScanProgress::default();
+            let snapshot =
+                ohmydisk_core::scan::scan(&fake.root, fake.as_ref(), &cancel, &mut |progress| {
+                    assert_ne!(progress.phase, "reducing");
+                    latest = progress;
+                })
+                .unwrap();
+            (snapshot, latest)
+        };
+        assert!(snapshot.cancelled);
+        assert_eq!(latest.phase, "cancelled");
+        let completion = latest.completion.unwrap();
+        assert_eq!(completion.discovered_directory_tasks, 1);
+        assert_eq!(completion.completed_directory_tasks, 0);
+        assert_eq!(completion.percentage, 0);
+        assert_eq!(fake.entered.lock().unwrap().len(), 1);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worker_failure_preserves_the_last_partial_directory_telemetry() {
+    let root = tempfile::tempdir().unwrap();
+    let mut fake = Fake::new(root.path().canonicalize().unwrap());
+    fake.entry("panic", info(NodeKind::Directory, "panic", 0));
+    fake.entry("busy", info(NodeKind::Directory, "busy", 0));
+    fake.gate = Some(Gate::default());
+    fake.panic_child = true;
+    let (result, latest) = run_observing(Arc::new(fake), 2, Arc::new(false.into())).await;
+    assert_eq!(result.unwrap_err().code, "worker_panic");
+    assert_eq!(latest.phase, "failed");
+    let completion = latest.completion.unwrap();
+    assert_eq!(completion.discovered_directory_tasks, 3);
+    assert!(completion.completed_directory_tasks < completion.discovered_directory_tasks);
+    assert!(completion.percentage < 90);
+    assert!(completion.estimated);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -655,6 +843,10 @@ async fn preparation_cancels_without_waiting_for_another_scans_permit_or_touchin
         assert!(snapshot.space_accounting.is_none());
         assert_eq!(snapshot.root_path.to_path().unwrap(), requested);
         assert_eq!(changes.borrow().phase, "cancelled");
+        let completion = changes.borrow().completion.clone().unwrap();
+        assert_eq!(completion.percentage, 0);
+        assert_eq!(completion.discovered_directory_tasks, 1);
+        assert_eq!(completion.completed_directory_tasks, 0);
         assert_eq!(
             budget.available_permits(),
             0,

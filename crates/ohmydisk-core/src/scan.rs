@@ -1,7 +1,7 @@
 use crate::space::{file_space, reconcile_space};
 use crate::{
     AppError, AttributionProvider, DirectoryEvent, FileInfo, NativePath, Node, NodeKind, NodeSpace,
-    Platform, ScanIssue, ScanProgress, Snapshot, SpaceObservation, new_id, now_ms,
+    Platform, ScanCompletion, ScanIssue, ScanProgress, Snapshot, SpaceObservation, new_id, now_ms,
 };
 use std::{
     collections::HashSet,
@@ -23,19 +23,35 @@ pub fn scan(
 ) -> Result<Snapshot, AppError> {
     let (root, volume, before) = prepare_root(root, platform)?;
     let mut builder = ScanBuilder::new(&root, volume, before);
-    let mut pending = vec![(root.clone(), None)];
-    while let Some((path, parent)) = pending.pop() {
+    progress(builder.counts.clone());
+    // Portable enumeration may defer metadata for ordinary files as well as
+    // directories. Only directory hints or fresh directory metadata create a
+    // directory task; deferred file metadata must not inflate that denominator.
+    let mut pending = vec![(root.clone(), None, true)];
+    while let Some((path, parent, mut directory_task)) = pending.pop() {
         if cancelled.load(Ordering::Relaxed) {
             break;
         }
+        let info = platform.scan_metadata(&path);
+        if !directory_task
+            && info
+                .as_ref()
+                .is_ok_and(|info| info.kind == NodeKind::Directory)
+        {
+            builder.counts.discover_directory_task();
+            directory_task = true;
+        }
         let old_len = builder.snapshot.nodes.len();
-        let admitted = builder.add(&path, parent, platform.scan_metadata(&path));
+        let admitted = builder.add(&path, parent, info);
         if builder.snapshot.nodes.len() != old_len
             && builder.snapshot.nodes.len().is_multiple_of(128)
         {
             progress(builder.counts.clone());
         }
         let Some(index) = admitted else {
+            if directory_task && !cancelled.load(Ordering::Relaxed) {
+                builder.counts.complete_directory_task();
+            }
             continue;
         };
         let result = platform.read_directory(&path, &mut |event| {
@@ -47,14 +63,21 @@ pub fn scan(
                     // Only ordinary-file metadata is reused. Directories are checked
                     // again immediately before traversal, including native bulk entries.
                     let old_len = builder.snapshot.nodes.len();
-                    match entry.info {
-                        Some(Ok(info)) if info.kind != NodeKind::Directory => {
-                            builder.add(&entry.path, Some(index), Ok(info));
+                    let directory_task = entry.kind_hint == Some(NodeKind::Directory)
+                        || entry.info.as_ref().is_some_and(|info| {
+                            info.as_ref()
+                                .is_ok_and(|info| info.kind == NodeKind::Directory)
+                        });
+                    if directory_task {
+                        builder.counts.discover_directory_task();
+                        pending.push((entry.path, Some(index), true));
+                    } else {
+                        match entry.info {
+                            Some(info) => {
+                                builder.add(&entry.path, Some(index), info);
+                            }
+                            None => pending.push((entry.path, Some(index), false)),
                         }
-                        Some(Err(error)) => {
-                            builder.add(&entry.path, Some(index), Err(error));
-                        }
-                        _ => pending.push((entry.path, Some(index))),
                     }
                     if builder.snapshot.nodes.len() != old_len
                         && builder.snapshot.nodes.len().is_multiple_of(128)
@@ -69,6 +92,13 @@ pub fn scan(
         if let Err(error) = result {
             builder.directory_error(index, &error);
         }
+        if !cancelled.load(Ordering::Relaxed) {
+            builder.counts.complete_directory_task();
+        }
+    }
+    if !cancelled.load(Ordering::Relaxed) {
+        builder.counts.begin_reducing();
+        progress(builder.counts.clone());
     }
     let after = matching_observation(platform, &root, &builder.volume);
     let (snapshot, counts) = builder.finish(cancelled, after);
@@ -149,6 +179,7 @@ impl ScanBuilder {
             parents: Vec::new(),
             counts: ScanProgress {
                 phase: "scanning".into(),
+                completion: Some(ScanCompletion::default()),
                 ..Default::default()
             },
         }

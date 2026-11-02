@@ -1,5 +1,5 @@
 use crate::{
-    api,
+    api, scan_progress,
     snapshot_cache::{SnapshotCache, SnapshotView},
     store::Store,
 };
@@ -152,6 +152,11 @@ impl Engine {
                     "global_filesystem_workers":self.scan_concurrency.filesystem_workers,
                     "expensive_queries":2,
                     "manual_workers_semantics":"per_scan_ceiling_subject_to_shared_filesystem_budget"
+                },"scan_progress":{
+                    "completion_path":"progress.completion",
+                    "percentage_semantics":"monotonic_estimate_of_discovered_directory_work_and_publication_phases",
+                    "requires_extra_walk":false,
+                    "full_completion_requires":"published_complete_snapshot"
                 },"space_reclaimed":"observe_volume_available_bytes; trash does not promise freed space"}),
             ),
             "list_sources" => Ok(json!({"items":self.platform.volumes()?})),
@@ -304,8 +309,13 @@ impl Engine {
     }
     fn scan_summary(&self, record: &ScanRecord) -> Result<Value, AppError> {
         let job = self.job(&record.job_id)?;
+        let progress = scan_progress::for_summary(
+            &job,
+            record.complete,
+            record.snapshot_id.is_some() && record.root_id.is_some(),
+        );
         Ok(
-            json!({"scan_id":record.scan_id,"snapshot_id":record.snapshot_id,"root_id":record.root_id,"root_path":record.root_path,"logical_bytes":record.logical_bytes,"complete":record.complete,"created_at":record.created_at,"started_at":job.created_at,"elapsed_ms":job.elapsed_ms,"finished_at":job.finished_at,"known_stale":record.known_stale,"needs_rescan":record.needs_rescan,"refresh_job_id":record.refresh_job_id,"job_id":record.job_id,"state":job.state,"issue_count":record.issue_count,"size_metric":"logical_bytes","captured_at":record.created_at,"space_accounting":record.space_accounting,"default_display_metric":"attributed"}),
+            json!({"scan_id":record.scan_id,"snapshot_id":record.snapshot_id,"root_id":record.root_id,"root_path":record.root_path,"logical_bytes":record.logical_bytes,"complete":record.complete,"created_at":record.created_at,"started_at":job.created_at,"elapsed_ms":job.elapsed_ms,"finished_at":job.finished_at,"known_stale":record.known_stale,"needs_rescan":record.needs_rescan,"refresh_job_id":record.refresh_job_id,"job_id":record.job_id,"state":job.state,"progress":progress,"issue_count":record.issue_count,"size_metric":"logical_bytes","captured_at":record.created_at,"space_accounting":record.space_accounting,"default_display_metric":"attributed"}),
         )
     }
     fn start_scan(self: &Arc<Self>, args: Value) -> Result<Value, AppError> {
@@ -341,7 +351,8 @@ impl Engine {
         };
         let mut initial_result = json!({"scan_id":scan_id});
         selection.annotate(&mut initial_result);
-        let job = new_job(&job_id, "scan", initial_result);
+        let mut job = new_job(&job_id, "scan", initial_result);
+        job.progress = scan_progress::queued();
         let response = json!({"scan_id":scan_id,"job_id":job_id});
         let (response, accepted) = self.store.accept_job(
             "start_scan",
@@ -366,6 +377,9 @@ impl Engine {
     ) {
         self.launch(job_id, move |engine, job_id, cancel| {
             let started=Instant::now();
+            engine.store.update::<Job>("job", &job_id, |j| {
+                scan_progress::checkpoint(&mut j.progress, "preparing", Some(0));
+            })?;
             let runtime = tokio::runtime::Handle::current();
             let options = scan_async::ScanOptions { workers: selection.workers, ..Default::default() };
             let (mut snapshot, progress_writes, progress_write_ms) = runtime.block_on(async {
@@ -380,7 +394,7 @@ impl Engine {
                         let mut progress = receiver.borrow_and_update().clone();
                         let now = Instant::now();
                         if progress.phase == "scanning" && last_update.is_some_and(|last| now.duration_since(last) < Duration::from_millis(250)) { continue; }
-                        if progress.phase == "completed" { progress.phase = "saving".into(); }
+                        if progress.phase == "completed" { scan_progress::checkpoint(&mut progress, "saving", Some(95)); }
                         let engine = writer_engine.clone(); let id = writer_id.clone();
                         let start = Instant::now();
                         if tokio::task::spawn_blocking(move || engine.store.update::<Job>("job", &id, |job| job.progress = progress)).await.is_ok_and(|value| value.is_ok()) {
@@ -398,10 +412,15 @@ impl Engine {
             let scan_ms=started.elapsed().as_secs_f64()*1000.0;
             snapshot.scan_id=scan_id.clone();
             let state=if snapshot.cancelled {"cancelled"}else if snapshot.complete {"completed"}else{"completed_with_errors"};
+            engine.store.update::<Job>("job",&job_id,|j| {
+                scan_progress::checkpoint(&mut j.progress, "saving", (!snapshot.cancelled).then_some(95));
+            })?;
             let persist=Instant::now();
             let storage=engine.store.put_snapshot(&snapshot)?;
             let persist_ms=persist.elapsed().as_secs_f64()*1000.0;
-            engine.store.update::<Job>("job",&job_id,|j|j.progress.phase="indexing".into())?;
+            engine.store.update::<Job>("job",&job_id,|j| {
+                scan_progress::checkpoint(&mut j.progress, "indexing", (!snapshot.cancelled).then_some(98));
+            })?;
             let indexing=Instant::now();
             let snapshot=engine.snapshots.insert(snapshot)?;
             let index_build_ms=indexing.elapsed().as_secs_f64()*1000.0;
@@ -782,6 +801,7 @@ impl Engine {
                     .update::<Job>("job", &job_id, |j| match result {
                         Ok(state) => {
                             finish_scan_timing(j, started);
+                            scan_progress::complete(j, &state);
                             j.state = state;
                             j.progress.phase = "finished".into();
                         }
@@ -863,6 +883,141 @@ fn expensive_query(query: &Query, root_id: &str) -> bool {
 #[cfg(test)]
 mod query_budget_tests {
     use super::*;
+
+    async fn finished_job(engine: &Arc<Engine>, started: &Value) -> Job {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let value = engine
+                    .handle("get_job", json!({"job_id":started["job_id"]}))
+                    .await
+                    .unwrap();
+                let job: Job = serde_json::from_value(value).unwrap();
+                if !active_state(&job.state) && !engine.has_active_jobs() {
+                    return job;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    struct FixturePlatform {
+        blocked: Option<PathBuf>,
+    }
+    impl Platform for FixturePlatform {
+        fn metadata(&self, path: &std::path::Path) -> std::io::Result<FileInfo> {
+            ohmydisk_platform::NativePlatform.metadata(path)
+        }
+        fn scan_metadata(&self, path: &std::path::Path) -> std::io::Result<FileInfo> {
+            ohmydisk_platform::NativePlatform.scan_metadata(path)
+        }
+        fn read_directory(
+            &self,
+            path: &std::path::Path,
+            visitor: &mut dyn FnMut(DirectoryEvent) -> bool,
+        ) -> std::io::Result<()> {
+            if self.blocked.as_deref() == Some(path) {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "modeled unreadable fixture directory",
+                ))
+            } else {
+                ohmydisk_platform::NativePlatform.read_directory(path, visitor)
+            }
+        }
+        fn volumes(&self) -> std::io::Result<Vec<Volume>> {
+            Ok(vec![])
+        }
+        fn trash(&self, _: &std::path::Path) -> std::io::Result<()> {
+            unreachable!()
+        }
+        fn reveal(&self, _: &std::path::Path) -> std::io::Result<()> {
+            unreachable!()
+        }
+        fn protected_paths(&self) -> Vec<PathBuf> {
+            vec![]
+        }
+    }
+
+    #[tokio::test]
+    async fn only_published_complete_results_retain_one_hundred_percent_in_summaries() {
+        for partial in [false, true] {
+            let fixture = tempfile::tempdir().unwrap();
+            let root = fixture.path().join("files");
+            std::fs::create_dir_all(root.join("readable/deep")).unwrap();
+            std::fs::create_dir(root.join("blocked")).unwrap();
+            std::fs::write(root.join("readable/deep/keep.txt"), "owned fixture").unwrap();
+            let root = root.canonicalize().unwrap();
+            let platform = FixturePlatform {
+                blocked: partial.then(|| root.join("blocked")),
+            };
+            let engine = Engine::open(fixture.path().join("state"), Arc::new(platform)).unwrap();
+            let started = engine
+                .handle(
+                    "start_scan",
+                    json!({"root_path":root,"request_key":"completion"}),
+                )
+                .await
+                .unwrap();
+            let job = finished_job(&engine, &started).await;
+            assert_eq!(
+                job.state,
+                if partial {
+                    "completed_with_errors"
+                } else {
+                    "completed"
+                }
+            );
+            let completion = job.progress.completion.as_ref().unwrap();
+            assert_eq!(completion.discovered_directory_tasks, 4);
+            assert_eq!(completion.completed_directory_tasks, 4);
+            assert_eq!(completion.percentage, if partial { 98 } else { 100 });
+            assert_eq!(completion.estimated, partial);
+            let summary = engine
+                .handle("get_scan", json!({"scan_id":started["scan_id"]}))
+                .await
+                .unwrap();
+            assert_eq!(summary["complete"], !partial);
+            assert_eq!(
+                summary["progress"]["completion"]["percentage"],
+                completion.percentage
+            );
+            assert!(summary["snapshot_id"].is_string());
+            let children = engine
+                .handle(
+                    "list_children",
+                    json!({"scan_id":started["scan_id"],"node_id":summary["root_id"]}),
+                )
+                .await
+                .unwrap();
+            assert_eq!(children["items"].as_array().unwrap().len(), 2);
+            let scans = engine.handle("list_scans", json!({})).await.unwrap();
+            assert_eq!(scans["items"][0]["progress"], summary["progress"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn root_failure_keeps_queued_zero_instead_of_successful_progress() {
+        let fixture = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let engine = Engine::open(
+            fixture.path().join("state"),
+            Arc::new(ForbiddenFilesystem(calls.clone())),
+        )
+        .unwrap();
+        let started = engine
+            .handle(
+                "start_scan",
+                json!({"root_path":fixture.path().join("missing"),"request_key":"failed-progress"}),
+            )
+            .await
+            .unwrap();
+        let job = finished_job(&engine, &started).await;
+        assert_eq!(job.state, "failed");
+        assert_eq!(job.progress.completion.unwrap().percentage, 0);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn worker_selection_preserves_manual_ceiling_and_reports_shared_limit() {
@@ -1026,6 +1181,13 @@ mod query_budget_tests {
             .await
             .unwrap();
             assert_eq!(job["state"], "cancelled");
+            assert!(
+                job["progress"]["completion"]["percentage"]
+                    .as_u64()
+                    .unwrap()
+                    < 100
+            );
+            assert_eq!(job["progress"]["completion"]["estimated"], true);
             assert_eq!(job["result"]["scan_worker_mode"], mode);
             assert_eq!(job["result"]["scan_workers"], workers);
             assert_eq!(

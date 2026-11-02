@@ -5,6 +5,7 @@ mod collector_interaction;
 mod locale;
 mod preferences;
 mod scan_clock;
+mod scan_progress;
 mod scroll_area;
 mod source_catalog;
 mod space_view;
@@ -29,7 +30,8 @@ use iced::{
     Alignment, Background, Border, Color, Element, Font, Length, Subscription, Task, Theme,
 };
 use ohmydisk_core::model::{
-    AppError, CleanupMode, ItemResult, ItemStatus, Job, NativePath, Node, NodeKind, Volume, new_id,
+    AppError, CleanupMode, ItemResult, ItemStatus, Job, NativePath, Node, NodeKind, ScanProgress,
+    Volume, new_id,
 };
 use ohmydisk_core::{SpaceAccounting, SpaceObservation};
 use ohmydisk_service::ipc::Client;
@@ -121,6 +123,8 @@ struct ScanSummary {
     elapsed_ms: Option<u64>,
     #[serde(default)]
     started_at: Option<u64>,
+    #[serde(default)]
+    progress: Option<ScanProgress>,
 }
 
 #[derive(Clone, Debug)]
@@ -187,7 +191,24 @@ struct ActiveJob {
     work: Work,
     state: String,
     progress: LocalizedText,
+    scan_progress: Option<ScanProgress>,
     clock: scan_clock::Clock,
+}
+
+impl ActiveJob {
+    fn scan_phase_label(&self, language: Language) -> &str {
+        if self.state == "cancel_requested" {
+            state_label(&self.state, language)
+        } else {
+            work_phase_label(
+                self.scan_progress
+                    .as_ref()
+                    .map_or("queued", |progress| progress.phase.as_str()),
+                &self.work,
+                language,
+            )
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -282,6 +303,7 @@ struct App {
     catalog: source_catalog::Catalog,
     catalog_epoch: u64,
     pending_scan_root: Option<NativePath>,
+    finished_scan: Option<(NativePath, Job)>,
     scan_return_root: Option<NativePath>,
     chrome: window_chrome::State,
     compact_preview: bool,
@@ -390,6 +412,7 @@ impl App {
                 catalog,
                 catalog_epoch: 0,
                 pending_scan_root: None,
+                finished_scan: None,
                 scan_return_root: None,
                 chrome: window_chrome::State::default(),
                 compact_preview: false,
@@ -510,6 +533,13 @@ impl App {
             return Task::none();
         }
         self.busy = true;
+        if self
+            .finished_scan
+            .as_ref()
+            .is_some_and(|(path, _)| source_catalog::path_equal(path, &root))
+        {
+            self.finished_scan = None;
+        }
         self.scan_return_root = self
             .scan
             .as_ref()
@@ -604,6 +634,50 @@ impl App {
             },
             move |result| Message::Response(Response::Scans { epoch }, result),
         )
+    }
+    fn resume_background_scan(&mut self) {
+        if self.active.is_some() || self.busy || self.review.is_some() || self.result.is_some() {
+            return;
+        }
+        let Some(scan) = self
+            .scans
+            .iter()
+            .filter(|scan| {
+                scan.job_id.as_ref().is_some_and(|id| !id.is_empty())
+                    && matches!(
+                        scan.state.as_deref(),
+                        Some("queued" | "running" | "cancel_requested")
+                    )
+                    && self
+                        .finished_scan
+                        .as_ref()
+                        .is_none_or(|(_, job)| scan.job_id.as_ref() != Some(&job.id))
+            })
+            .max_by(|left, right| {
+                left.started_at
+                    .unwrap_or(left.created_at)
+                    .cmp(&right.started_at.unwrap_or(right.created_at))
+                    .then(left.created_at.cmp(&right.created_at))
+                    .then(left.scan_id.cmp(&right.scan_id))
+            })
+        else {
+            return;
+        };
+        let job = ActiveJob {
+            id: scan.job_id.clone().expect("filtered scan job ID"),
+            work: Work::Scan,
+            state: scan.state.clone().unwrap_or_else(|| "running".into()),
+            progress: LocalizedText::new(
+                "Connected to the background scan. Reading progress…",
+                "已连接到后台扫描，正在读取进度…",
+            ),
+            scan_progress: scan.progress.clone(),
+            clock: clock_for_scan(scan),
+        };
+        self.pending_scan_root = Some(scan.root_path.clone());
+        // Observation of an existing job must not navigate on completion.
+        self.scan_return_root = None;
+        self.active = Some(job);
     }
     fn subscription(&self) -> Subscription<Message> {
         let jobs = if self.active.is_some() {
@@ -1106,6 +1180,15 @@ impl App {
             Response::Scans { epoch } if epoch == self.catalog_epoch => {
                 self.sources = decode_items(&value["sources"]);
                 self.scans = decode_items(&value);
+                if self.finished_scan.as_ref().is_some_and(|(_, job)| {
+                    self.scans.iter().any(|scan| {
+                        scan.job_id.as_ref() == Some(&job.id)
+                            && scan.state.as_deref() == Some(job.state.as_str())
+                    })
+                }) {
+                    self.finished_scan = None;
+                }
+                self.resume_background_scan();
                 if self.catalog.reconcile(&self.scans, &self.sources) {
                     return self.persist_catalog();
                 }
@@ -1118,6 +1201,7 @@ impl App {
                         work: Work::Scan,
                         state: "queued".into(),
                         progress: LocalizedText::new("Waiting to scan…", "等待扫描…"),
+                        scan_progress: None,
                         clock: scan_clock::Clock::default(),
                     });
                 } else {
@@ -1143,17 +1227,20 @@ impl App {
                         let work = self.active.as_ref().unwrap().work.clone();
                         if let Some(active) = &mut self.active {
                             active.state = job.state.clone();
+                            if matches!(active.work, Work::Scan | Work::Refresh) {
+                                active.scan_progress = Some(job.progress.clone());
+                            }
                             active.progress = LocalizedText::new(
                                 format!(
                                     "{} · {} files · {} folders · {}",
-                                    phase_label(&job.progress.phase, Language::English),
+                                    work_phase_label(&job.progress.phase, &work, Language::English),
                                     job.progress.files,
                                     job.progress.directories,
                                     crop(&job.progress.current_path, 56)
                                 ),
                                 format!(
                                     "{} · {} 个文件 · {} 个文件夹 · {}",
-                                    phase_label(&job.progress.phase, Language::Chinese),
+                                    work_phase_label(&job.progress.phase, &work, Language::Chinese),
                                     job.progress.files,
                                     job.progress.directories,
                                     crop(&job.progress.current_path, 56)
@@ -1169,7 +1256,16 @@ impl App {
                         self.active = None;
                         self.busy = false;
                         if matches!(work, Work::Scan | Work::Refresh) {
-                            self.pending_scan_root = None;
+                            self.finished_scan = self
+                                .pending_scan_root
+                                .take()
+                                .or_else(|| {
+                                    self.scans
+                                        .iter()
+                                        .find(|scan| scan.job_id.as_ref() == Some(&job.id))
+                                        .map(|scan| scan.root_path.clone())
+                                })
+                                .map(|root| (root, job.clone()));
                         }
                         if let Some(error) = job.error {
                             self.banner = Some(error.to_string().into());
@@ -1286,6 +1382,7 @@ impl App {
                                             "Connected to the background scan. Reading progress…",
                                             "已连接到后台扫描，正在读取进度…",
                                         ),
+                                        scan_progress: scan.progress.clone(),
                                         clock,
                                     });
                                     self.banner = Some(LocalizedText::new(
@@ -1322,6 +1419,7 @@ impl App {
                                         "Getting background refresh status…",
                                         "正在取得后台刷新状态…",
                                     ),
+                                    scan_progress: None,
                                     clock: scan_clock::Clock::default(),
                                 });
                             }
@@ -1406,6 +1504,7 @@ impl App {
                             "Checking file identities and the complete directory manifest…",
                             "正在核对文件身份和完整目录清单…",
                         ),
+                        scan_progress: None,
                         clock: scan_clock::Clock::default(),
                     });
                 }
@@ -1474,6 +1573,7 @@ impl App {
                             "Processing each item in the approved cleanup plan…",
                             "正在逐项处理已确认的清理计划…",
                         ),
+                        scan_progress: None,
                         clock: scan_clock::Clock::default(),
                     });
                 }
@@ -1506,6 +1606,7 @@ impl App {
                                 "Cleanup results saved. Rescanning the original location…",
                                 "清理结果已保存，正在重新扫描原位置…",
                             ),
+                            scan_progress: None,
                             clock: scan_clock::Clock::default(),
                         });
                     } else if let Some(id) = string(&value, "refresh_scan_id") {
@@ -1549,9 +1650,7 @@ impl App {
             .find(|node| node.id == id)
     }
     fn scan_time_label(&self, scan: &ScanSummary) -> String {
-        if let Some(job) = self.active.as_ref().filter(|job| {
-            scan.job_id.as_ref() == Some(&job.id) && matches!(job.work, Work::Scan | Work::Refresh)
-        }) {
+        if let Some(job) = self.active_scan_for_source(&scan.root_path, Some(scan)) {
             return format!(
                 "{} {}",
                 self.language.text("Elapsed", "已用时"),
@@ -1559,6 +1658,101 @@ impl App {
             );
         }
         scan_time_summary(scan, self.language)
+    }
+
+    fn active_scan_for_source(
+        &self,
+        path: &NativePath,
+        attempt: Option<&ScanSummary>,
+    ) -> Option<&ActiveJob> {
+        self.active.as_ref().filter(|job| {
+            matches!(job.work, Work::Scan | Work::Refresh)
+                && (self
+                    .pending_scan_root
+                    .as_ref()
+                    .is_some_and(|root| source_catalog::path_equal(root, path))
+                    || attempt.is_some_and(|scan| {
+                        source_catalog::path_equal(&scan.root_path, path)
+                            && (scan.job_id.as_ref() == Some(&job.id)
+                                || scan.refresh_job_id.as_ref() == Some(&job.id))
+                    }))
+        })
+    }
+
+    fn source_progress(
+        &self,
+        path: &NativePath,
+        attempt: Option<&ScanSummary>,
+    ) -> Option<scan_progress::Presentation> {
+        if let Some(job) = self.active_scan_for_source(path, attempt) {
+            return Some(scan_progress::Presentation::active(
+                job.scan_progress
+                    .as_ref()
+                    .and_then(|progress| progress.completion.as_ref()),
+            ));
+        }
+        if let Some(job) = self.finished_scan_for_source(path) {
+            return scan_progress::Presentation::terminal(
+                job.progress.completion.as_ref(),
+                job.state == "completed",
+            );
+        }
+        if self.busy
+            && self
+                .pending_scan_root
+                .as_ref()
+                .is_some_and(|root| source_catalog::path_equal(root, path))
+        {
+            return Some(scan_progress::Presentation::active(None));
+        }
+        let scan = attempt?;
+        let completion = scan
+            .progress
+            .as_ref()
+            .and_then(|progress| progress.completion.as_ref());
+        if matches!(
+            scan.state.as_deref(),
+            Some("queued" | "running" | "cancel_requested")
+        ) {
+            return Some(scan_progress::Presentation::active(completion));
+        }
+        if scan.known_stale {
+            return None;
+        }
+        scan_progress::Presentation::terminal(
+            completion,
+            scan.complete && scan.state.as_deref() == Some("completed"),
+        )
+    }
+
+    fn finished_scan_for_source(&self, path: &NativePath) -> Option<&Job> {
+        if self
+            .active_scan_for_source(path, source_catalog::latest(&self.scans, path))
+            .is_some()
+        {
+            return None;
+        }
+        self.finished_scan
+            .as_ref()
+            .filter(|(root, _)| source_catalog::path_equal(root, path))
+            .map(|(_, job)| job)
+    }
+
+    fn displayed_scan_progress(&self, scan: &ScanSummary) -> Option<scan_progress::Presentation> {
+        if self
+            .active_scan_for_source(&scan.root_path, Some(scan))
+            .is_none()
+        {
+            if self
+                .finished_scan_for_source(&scan.root_path)
+                .is_some_and(|job| scan.job_id.as_ref() != Some(&job.id))
+                || source_catalog::latest(&self.scans, &scan.root_path)
+                    .is_some_and(|attempt| attempt.scan_id != scan.scan_id)
+            {
+                return None;
+            }
+        }
+        self.source_progress(&scan.root_path, Some(scan))
     }
     fn navigate(&mut self, id: &str, record: bool) -> Task<Message> {
         let location = if let Some(node) = self.find_node(id) {
@@ -2294,6 +2488,552 @@ mod language_tests {
         .unwrap()
     }
 
+    fn progress_value(percentage: u8, estimated: bool) -> Value {
+        json!({
+            "files":12345,"directories":123,"bytes":999,"current_path":"/fixture/subdirectory/item",
+            "phase":"scanning","completion":{
+                "percentage":percentage,"estimated":estimated,"basis":"discovered_directory_tasks",
+                "discovered_directory_tasks":123,"completed_directory_tasks":45
+            }
+        })
+    }
+
+    fn background_summary(root: &NativePath, id: &str, state: &str, started: u64) -> Value {
+        json!({
+            "scan_id":id,"job_id":format!("{id}-job"),"root_id":null,"root_path":root,
+            "state":state,"complete":false,"started_at":started,"created_at":started,
+            "elapsed_ms":12340,"progress":progress_value(42,true)
+        })
+    }
+
+    #[test]
+    fn accepted_catalog_resumes_recent_background_work_without_navigation_or_new_scan() {
+        let mut app = app();
+        let shown = NativePath::new(&app._data_dir.path().join("shown"));
+        let root = NativePath::new(&app._data_dir.path().join("resumed"));
+        let older_root = NativePath::new(&app._data_dir.path().join("older"));
+        let existing: ScanSummary = serde_json::from_value(json!({
+            "scan_id":"shown","root_id":"shown-root","root_path":shown,
+            "state":"completed","complete":true
+        }))
+        .unwrap();
+        app.scan = Some(existing);
+        app.overview = false;
+        let location = Location {
+            id: "shown-root".into(),
+            name: "shown".into(),
+            path: shown.display.clone(),
+            bytes: Some(42),
+            measurement_partial: false,
+        };
+        app.location = Some(location.clone());
+        app.breadcrumbs = vec![location.clone()];
+        app.history = vec![location];
+        app.children = vec![node()];
+        app.collection = vec![node()];
+        app.draft_scan_id = Some("shown".into());
+        app.scan_return_root = Some(shown);
+        let selection = serde_json::to_value(&app.collection).unwrap();
+        let generation = app.collector_interaction.generation();
+        let mut older = background_summary(&older_root, "older", "queued", 1);
+        older["created_at"] = json!(9999);
+        let resumed = background_summary(&root, "resumed", "running", 2);
+        let completed = background_summary(&root, "finished", "completed", 100);
+        let payload = json!({"sources":{"items":[]},"items":[older,resumed,completed]});
+
+        let _ = app.receive(Response::Scans { epoch: 0 }, payload.clone());
+
+        let active = app.active.as_ref().unwrap();
+        assert_eq!(active.id, "resumed-job");
+        assert!(matches!(active.work, Work::Scan));
+        assert_eq!(active.state, "running");
+        assert_eq!(
+            active
+                .scan_progress
+                .as_ref()
+                .unwrap()
+                .completion
+                .as_ref()
+                .unwrap()
+                .percentage,
+            42
+        );
+        assert!(active.clock.elapsed_ms() >= 12340);
+        assert!(source_catalog::path_equal(
+            app.pending_scan_root.as_ref().unwrap(),
+            &root
+        ));
+        assert!(app.scan_return_root.is_none());
+        assert!(!app.overview);
+        assert!(!app.loading);
+        assert_eq!(app.epoch, 0);
+        assert_eq!(app.scan.as_ref().unwrap().scan_id, "shown");
+        assert_eq!(app.location.as_ref().unwrap().id, "shown-root");
+        assert_eq!(app.breadcrumbs[0].id, "shown-root");
+        assert_eq!(app.history[0].id, "shown-root");
+        assert_eq!(app.children.len(), 1);
+        assert_eq!(serde_json::to_value(&app.collection).unwrap(), selection);
+        assert_eq!(app.draft_scan_id.as_deref(), Some("shown"));
+        assert_eq!(app.collector_interaction.generation(), generation);
+
+        let mut terminal = terminal_scan_job("completed", "resumed-result");
+        terminal["id"] = json!("resumed-job");
+        terminal["progress"] = progress_value(100, false);
+        let _ = app.receive(
+            Response::Poll {
+                id: "resumed-job".into(),
+            },
+            terminal,
+        );
+        assert!(app.active.is_none());
+        assert!(!app.loading);
+        assert_eq!(app.epoch, 0);
+        let epoch = app.catalog_epoch;
+        // An older captured running row must not resume the job we just finished;
+        // another real active job can still be observed after the refresh.
+        let _ = app.receive(Response::Scans { epoch }, payload);
+        assert_eq!(app.active.as_ref().unwrap().id, "older-job");
+        assert!(source_catalog::path_equal(
+            app.pending_scan_root.as_ref().unwrap(),
+            &older_root
+        ));
+        assert!(!app.overview);
+        assert_eq!(serde_json::to_value(&app.collection).unwrap(), selection);
+    }
+
+    #[test]
+    fn background_resume_never_overwrites_local_work_or_cleanup_modals() {
+        for guard in ["local-scan", "cleanup", "busy", "review", "result"] {
+            let mut app = app();
+            let root = NativePath::new(&app._data_dir.path().join("background"));
+            let local_root = NativePath::new(&app._data_dir.path().join("local"));
+            app.pending_scan_root = Some(local_root.clone());
+            match guard {
+                "local-scan" | "cleanup" => {
+                    app.active = Some(ActiveJob {
+                        id: "owned-job".into(),
+                        work: if guard == "cleanup" {
+                            Work::Cleanup
+                        } else {
+                            Work::Scan
+                        },
+                        state: "running".into(),
+                        progress: LocalizedText::new("Owned work", "当前任务"),
+                        scan_progress: None,
+                        clock: scan_clock::Clock::default(),
+                    })
+                }
+                "busy" => app.busy = true,
+                "review" => app.review = Some(plan()),
+                "result" => app.result = Some(json!({"job_id":"cleanup-receipt"})),
+                _ => unreachable!(),
+            }
+            let _ = app.receive(Response::Scans { epoch:0 },json!({
+                "sources":{"items":[]},"items":[background_summary(&root,"background","running",1)]
+            }));
+            assert_eq!(
+                app.active.as_ref().map(|job| job.id.as_str()),
+                matches!(guard, "local-scan" | "cleanup").then_some("owned-job"),
+                "{guard}"
+            );
+            assert!(
+                source_catalog::path_equal(app.pending_scan_root.as_ref().unwrap(), &local_root),
+                "{guard}"
+            );
+            if guard == "review" {
+                assert!(app.review.is_some());
+            }
+            if guard == "result" {
+                assert!(app.result.is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn background_resume_ignores_terminal_and_unaddressable_history() {
+        for state in [
+            "completed",
+            "completed_with_errors",
+            "cancelled",
+            "failed",
+            "interrupted",
+            "",
+        ] {
+            let mut app = app();
+            let root = NativePath::new(&app._data_dir.path().join("history"));
+            let _ = app.receive(
+                Response::Scans { epoch: 0 },
+                json!({
+                    "sources":{"items":[]},"items":[background_summary(&root,"history",state,1)]
+                }),
+            );
+            assert!(app.active.is_none(), "{state}");
+            assert!(app.pending_scan_root.is_none());
+        }
+        for state in ["queued", "running", "cancel_requested"] {
+            let mut app = app();
+            let root = NativePath::new(&app._data_dir.path().join("legacy"));
+            let mut value = background_summary(&root, "legacy", state, 1);
+            value["job_id"] = Value::Null;
+            let _ = app.receive(
+                Response::Scans { epoch: 0 },
+                json!({"sources":{"items":[]},"items":[value]}),
+            );
+            assert!(app.active.is_none());
+        }
+    }
+
+    #[test]
+    fn stale_catalog_cannot_resume_a_job_but_current_legacy_progress_can_resume() {
+        let mut app = app();
+        app.catalog_epoch = 5;
+        let root = NativePath::new(&app._data_dir.path().join("background"));
+        let mut legacy = background_summary(&root, "legacy", "cancel_requested", 1);
+        legacy.as_object_mut().unwrap().remove("progress");
+        let payload = json!({"sources":{"items":[]},"items":[legacy]});
+        let _ = app.update(Message::Response(
+            Response::Scans { epoch: 4 },
+            Ok(payload.clone()),
+        ));
+        assert!(app.active.is_none());
+        assert!(app.scans.is_empty());
+        let _ = app.receive(Response::Scans { epoch: 5 }, payload);
+        let active = app.active.as_ref().unwrap();
+        assert_eq!(active.id, "legacy-job");
+        assert_eq!(active.state, "cancel_requested");
+        assert!(active.scan_progress.is_none());
+        assert_eq!(
+            app.source_progress(&root, app.scans.first())
+                .unwrap()
+                .fill(),
+            0.0
+        );
+    }
+
+    #[test]
+    fn progress_phases_localize_scan_preparation_without_changing_cleanup_copy() {
+        assert_eq!(
+            work_phase_label("preparing", &Work::Scan, Language::English),
+            "Preparing scan"
+        );
+        assert_eq!(
+            work_phase_label("preparing", &Work::Refresh, Language::Chinese),
+            "准备扫描"
+        );
+        assert_eq!(
+            work_phase_label(
+                "preparing",
+                &Work::Prepare(CleanupMode::Trash),
+                Language::English
+            ),
+            "Checking manifest"
+        );
+        assert_eq!(
+            work_phase_label(
+                "preparing",
+                &Work::Prepare(CleanupMode::Trash),
+                Language::Chinese
+            ),
+            "核对清单"
+        );
+        for (phase, english, chinese) in [
+            ("reducing", "Summarizing scan results", "汇总扫描结果"),
+            ("failed", "Failed", "失败"),
+        ] {
+            assert_eq!(
+                work_phase_label(phase, &Work::Scan, Language::English),
+                english
+            );
+            assert_eq!(
+                work_phase_label(phase, &Work::Scan, Language::Chinese),
+                chinese
+            );
+        }
+    }
+
+    #[test]
+    fn scan_percentages_follow_live_job_identity_and_runtime_language() {
+        let mut app = app();
+        let root = NativePath::new(&app._data_dir.path().join("documents"));
+        let previous: ScanSummary = serde_json::from_value(json!({
+            "scan_id":"previous","job_id":"previous-job","root_id":"root","root_path":root,
+            "state":"completed","complete":true,"progress":progress_value(100,false)
+        }))
+        .unwrap();
+        app.scans = vec![previous.clone()];
+        app.collection = vec![node()];
+        let selection = serde_json::to_value(&app.collection).unwrap();
+        app.pending_scan_root = Some(root.clone());
+        let _ = app.receive(Response::StartedScan, json!({"job_id":"scan-job"}));
+        assert_eq!(
+            app.source_progress(&root, Some(&previous))
+                .unwrap()
+                .percentage,
+            None
+        );
+
+        let mut running = terminal_scan_job("running", "new-result");
+        running["progress"] = progress_value(42, true);
+        let _ = app.receive(
+            Response::Poll {
+                id: "scan-job".into(),
+            },
+            running.clone(),
+        );
+        let raw = app.active.as_ref().unwrap().scan_progress.as_ref().unwrap();
+        assert_eq!(raw.files, 12345);
+        assert_eq!(raw.completion.as_ref().unwrap().percentage, 42);
+        assert_eq!(
+            app.source_progress(&root, Some(&previous))
+                .unwrap()
+                .label(app.language),
+            "Estimated 42%"
+        );
+        assert_eq!(
+            app.displayed_scan_progress(&previous).unwrap().percentage,
+            Some(42)
+        );
+
+        let _ = app.update(Message::SetLanguage(Language::Chinese));
+        assert_eq!(
+            app.source_progress(&root, Some(&previous))
+                .unwrap()
+                .label(app.language),
+            "估算 42%"
+        );
+        assert_eq!(serde_json::to_value(&app.collection).unwrap(), selection);
+        running["progress"] = progress_value(98, true);
+        let _ = app.receive(
+            Response::Poll {
+                id: "stale-job".into(),
+            },
+            running,
+        );
+        assert_eq!(
+            app.source_progress(&root, Some(&previous))
+                .unwrap()
+                .percentage,
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn a_failed_retry_cannot_flash_previous_success_while_catalog_refresh_is_pending() {
+        let mut app = app();
+        let root = NativePath::new(&app._data_dir.path().join("documents"));
+        let previous = json!({
+            "scan_id":"previous","job_id":"previous-job","root_id":"root","root_path":root,
+            "state":"completed","complete":true,"started_at":1,"progress":progress_value(100,false)
+        });
+        let old: ScanSummary = serde_json::from_value(previous.clone()).unwrap();
+        app.scans = vec![old.clone()];
+        app.pending_scan_root = Some(root.clone());
+        let _ = app.receive(Response::StartedScan, json!({"job_id":"scan-job"}));
+        let mut failed = terminal_scan_job("failed", "failed-retry");
+        failed["progress"] = progress_value(42, true);
+        let _ = app.receive(
+            Response::Poll {
+                id: "scan-job".into(),
+            },
+            failed,
+        );
+        assert!(app.active.is_none());
+        assert!(app.finished_scan.is_some());
+        assert_eq!(
+            app.source_progress(&root, Some(&old)).unwrap().percentage,
+            Some(42)
+        );
+        assert!(app.displayed_scan_progress(&old).is_none());
+
+        let epoch = app.catalog_epoch;
+        let _ = app.receive(
+            Response::Scans { epoch },
+            json!({"sources":{"items":[]},"items":[previous,{
+                "scan_id":"failed-retry","job_id":"scan-job","root_id":null,"root_path":root,
+                "state":"failed","complete":false,"started_at":2,"elapsed_ms":100,
+                "progress":progress_value(42,true)
+            }]}),
+        );
+        assert!(app.finished_scan.is_none());
+        let latest = source_catalog::latest(&app.scans, &root).unwrap();
+        assert_eq!(
+            app.source_progress(&root, Some(latest)).unwrap().percentage,
+            Some(42)
+        );
+        assert!(app.displayed_scan_progress(&old).is_none());
+    }
+
+    #[test]
+    fn cleanup_refresh_uses_its_active_phase_instead_of_cached_completion() {
+        let mut app = app();
+        let root = NativePath::new(&app._data_dir.path().join("documents"));
+        let old: ScanSummary = serde_json::from_value(json!({
+            "scan_id":"old","job_id":"old-job","root_id":"root","root_path":root,
+            "state":"completed","complete":true,"progress":progress_value(100,false)
+        }))
+        .unwrap();
+        app.scans = vec![old.clone()];
+        let finished: Job = serde_json::from_value(terminal_scan_job("completed", "old")).unwrap();
+        app.finished_scan = Some((root.clone(), finished));
+        app.pending_scan_root = Some(root.clone());
+        app.active = Some(ActiveJob {
+            id: "refresh-job".into(),
+            work: Work::Refresh,
+            state: "running".into(),
+            progress: LocalizedText::new("Refreshing", "刷新中"),
+            scan_progress: Some(serde_json::from_value(progress_value(42, true)).unwrap()),
+            clock: scan_clock::Clock::default(),
+        });
+        assert!(app.finished_scan_for_source(&root).is_none());
+        assert_eq!(
+            app.active_scan_for_source(&root, Some(&old))
+                .unwrap()
+                .scan_phase_label(Language::English),
+            "Scanning"
+        );
+        assert_eq!(
+            app.active_scan_for_source(&root, Some(&old))
+                .unwrap()
+                .scan_phase_label(Language::Chinese),
+            "扫描中"
+        );
+        assert_eq!(
+            app.source_progress(&root, Some(&old)).unwrap().percentage,
+            Some(42)
+        );
+        app.active = None;
+        app.scans[0].state = Some("running".into());
+        assert!(app.source_scanning(&root));
+        assert!(app.finished_scan_for_source(&root).is_some());
+    }
+
+    #[test]
+    fn persisted_percentages_require_matching_complete_success_and_legacy_stays_optional() {
+        let app = app();
+        let root = NativePath::new(&app._data_dir.path().join("documents"));
+        for (state, complete, expected) in [
+            ("completed", true, 100),
+            ("completed", false, 99),
+            ("completed_with_errors", false, 99),
+            ("completed_with_errors", true, 99),
+            ("cancelled", false, 99),
+            ("failed", false, 99),
+            ("interrupted", false, 99),
+            ("running", false, 99),
+        ] {
+            let scan: ScanSummary = serde_json::from_value(json!({
+                "scan_id":"attempt","root_id":"root","root_path":root,
+                "state":state,"complete":complete,"elapsed_ms":72340,
+                "progress":progress_value(100,false)
+            }))
+            .unwrap();
+            assert_eq!(
+                app.source_progress(&root, Some(&scan)).unwrap().percentage,
+                Some(expected),
+                "{state}"
+            );
+            if state != "running" {
+                assert_eq!(
+                    scan_time_summary(&scan, Language::English),
+                    "Total time 1 m 12 s"
+                );
+            }
+        }
+        let legacy: ScanSummary = serde_json::from_value(json!({
+            "scan_id":"legacy","root_id":"root","root_path":root,"state":"completed","complete":true
+        }))
+        .unwrap();
+        assert!(app.source_progress(&root, Some(&legacy)).is_none());
+        let mut old_backend: ScanSummary = serde_json::from_value(json!({
+            "scan_id":"running","root_id":null,"root_path":root,"state":"running"
+        }))
+        .unwrap();
+        assert_eq!(
+            app.source_progress(&root, Some(&old_backend))
+                .unwrap()
+                .fill(),
+            0.0
+        );
+        old_backend.known_stale = true;
+        old_backend.state = Some("completed".into());
+        assert!(app.source_progress(&root, Some(&old_backend)).is_none());
+    }
+
+    #[test]
+    fn progress_strip_fits_narrow_windows_and_cleanup_has_no_scan_bar() {
+        use iced::advanced::{layout, widget::Tree};
+
+        fn check_bounds(node: &layout::Node) {
+            for child in node.children() {
+                let bounds = child.bounds();
+                assert!(bounds.x >= -0.01 && bounds.y >= -0.01, "{bounds:?}");
+                assert!(
+                    bounds.x + bounds.width <= node.size().width + 0.01,
+                    "{bounds:?} in {:?}",
+                    node.size()
+                );
+                assert!(
+                    bounds.y + bounds.height <= node.size().height + 0.01,
+                    "{bounds:?} in {:?}",
+                    node.size()
+                );
+                check_bounds(child);
+            }
+        }
+        fn scan_bars(node: &layout::Node) -> usize {
+            usize::from((node.size().height - 4.0).abs() < 0.01 && node.size().width > 80.0)
+                + node.children().iter().map(scan_bars).sum::<usize>()
+        }
+        let mut app = app();
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, 16.0.into());
+        let mut raw: ScanProgress = serde_json::from_value(progress_value(42, true)).unwrap();
+        raw.current_path = "/fixture/long-directory-name/".repeat(12);
+        raw.files = u64::MAX;
+        raw.directories = u64::MAX;
+        for width in [500.0, 1100.0] {
+            app.chrome.size = iced::Size::new(width, 480.0);
+            let content_width = width - if width < 1000.0 { 32.0 } else { 56.0 };
+            for language in [Language::English, Language::Chinese] {
+                app.language = language;
+                for work in [
+                    Work::Scan,
+                    Work::Refresh,
+                    Work::Prepare(CleanupMode::Trash),
+                    Work::Cleanup,
+                ] {
+                    let scanning = matches!(work, Work::Scan | Work::Refresh);
+                    let mut clock = scan_clock::Clock::default();
+                    clock.observe(3_723_000);
+                    app.active = Some(ActiveJob {
+                        id: "layout-job".into(),
+                        work,
+                        state: "running".into(),
+                        progress: LocalizedText::new(
+                            "Checking the approved items",
+                            "核对已确认的项目",
+                        ),
+                        scan_progress: Some(raw.clone()),
+                        clock,
+                    });
+                    let mut widget = app.job_strip();
+                    let mut tree = Tree::new(widget.as_widget());
+                    let node = widget.as_widget_mut().layout(
+                        &mut tree,
+                        &renderer,
+                        &layout::Limits::new(
+                            iced::Size::ZERO,
+                            iced::Size::new(content_width, 180.0),
+                        ),
+                    );
+                    check_bounds(&node);
+                    assert_eq!(node.size().width, content_width);
+                    assert!(node.size().height <= 180.0);
+                    assert_eq!(scan_bars(&node), usize::from(scanning));
+                }
+            }
+        }
+    }
+
     #[test]
     fn missing_preferences_start_in_english() {
         let app = app();
@@ -2335,6 +3075,7 @@ mod language_tests {
             work: Work::Scan,
             state: "running".into(),
             progress: LocalizedText::new("Scanning · 2 files", "扫描中 · 2 个文件"),
+            scan_progress: None,
             clock: scan_clock::Clock::default(),
         });
         app.result = Some(json!({"job_id":"previous-job"}));
@@ -3049,6 +3790,8 @@ fn phase_label(phase: &str, language: Language) -> &str {
         "completed" => language.text("Completed", "已完成"),
         "saving" => language.text("Saving scan results", "保存扫描结果"),
         "indexing" => language.text("Indexing scan results", "整理扫描结果"),
+        "reducing" => language.text("Summarizing scan results", "汇总扫描结果"),
+        "failed" => language.text("Failed", "失败"),
         "cancelled" => language.text("Stopped", "已停止"),
         "queued" => language.text("Waiting", "等待中"),
         _ => {
@@ -3058,6 +3801,13 @@ fn phase_label(phase: &str, language: Language) -> &str {
                 phase
             }
         }
+    }
+}
+fn work_phase_label<'a>(phase: &'a str, work: &Work, language: Language) -> &'a str {
+    if phase == "preparing" && matches!(work, Work::Scan | Work::Refresh) {
+        language.text("Preparing scan", "准备扫描")
+    } else {
+        phase_label(phase, language)
     }
 }
 fn state_label(state: &str, language: Language) -> &str {

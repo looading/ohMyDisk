@@ -26,7 +26,7 @@ Extract the archive, then open `OhMyDisk.app` on macOS or `ohmydisk.exe` on Wind
 - Drag chart segments or directory rows into the collection, then resize the collection to review more items.
 - Review exact cleanup targets before moving them to the system trash. Permanent deletion is a separate, explicitly confirmed action.
 - Manage disks and chosen folders in one list: view results, rescan, or remove a custom entry. Repeated folder paths share one entry; removing an entry keeps its files.
-- Track and cancel background jobs. GUI and stdio MCP share the same local service.
+- Track scans with an estimated progress bar, percentage and elapsed time; completed results retain total duration. Reopening the app reconnects to a running scan. Cancel background jobs from the app. GUI and stdio MCP share the same local service.
 
 Scanning uses Auto concurrency: available CPU parallelism capped at 4 directory workers. MCP callers can set `workers` from 1 to 64; all scans share a CPU-based filesystem budget capped at 64. See the [4/8/CPU benchmark and policy](benchmarks/PERFORMANCE-AUTO-2026-11-02.md) for the measurements and tradeoffs.
 

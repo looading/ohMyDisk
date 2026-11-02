@@ -149,7 +149,7 @@ fn tools() -> Vec<Tool> {
         ),
         make(
             "get_scan",
-            "Read a scan summary, completeness, timestamp, logical bytes and refresh job reference; does not return the whole tree.",
+            "Read a scan summary, completeness, timestamp, progress, logical bytes and refresh job reference; does not return the whole tree. A stored 100 percent means a complete result was published; partial results keep their last sub-100 estimate.",
             json!({"scan_id":string}),
             vec!["scan_id"],
             true,
@@ -167,7 +167,7 @@ fn tools() -> Vec<Tool> {
         ),
         make(
             "get_job",
-            "Poll background job state, progress, result identifiers and errors. progress.bytes is the legacy logical total, not occupied disk space; use get_scan.space_accounting for occupancy. Cancellation is cooperative.",
+            "Poll background job state, progress, result identifiers and errors. For scans, progress.completion.percentage is an explicitly estimated, monotonic known-directory-work/phase percentage until a complete result is published. Discovery may make it pause; it is not an exact fraction of all files or remaining time. Missing completion means unknown. progress.bytes is the legacy logical total, not occupied disk space; use get_scan.space_accounting for occupancy. Cancellation is cooperative.",
             json!({"job_id":string}),
             vec!["job_id"],
             true,

@@ -90,8 +90,21 @@ class Adapter:
 
     def wait(self, accepted):
         deadline = time.monotonic() + 30
+        last_percentage = 0
         while time.monotonic() < deadline:
             job = self.call("get_job", {"job_id": accepted["job_id"]})
+            if job["kind"] == "scan":
+                completion = job["progress"].get("completion")
+                assert isinstance(completion, dict), job
+                percentage = completion["percentage"]
+                assert isinstance(percentage, int) and last_percentage <= percentage <= 100, completion
+                assert completion["completed_directory_tasks"] <= completion["discovered_directory_tasks"], completion
+                if job["state"] not in TERMINAL:
+                    assert percentage < 100 and completion["estimated"] is True, completion
+                if job["state"] == "completed":
+                    assert percentage == 100 and completion["estimated"] is False, completion
+                    assert completion["completed_directory_tasks"] == completion["discovered_directory_tasks"], completion
+                last_percentage = percentage
             if job["state"] in TERMINAL:
                 assert job["state"] == "completed", job
                 return job
@@ -343,6 +356,7 @@ def run(binary, test_trash, service_mode="auto"):
             scan_id = accepted["scan_id"]
             summary = adapter.call("get_scan", {"scan_id": scan_id})
             assert summary["complete"] is True and "nodes" not in summary, summary
+            assert summary["progress"]["completion"] == auto_job["progress"]["completion"], summary
             assert summary["default_display_metric"] == "attributed", summary
             first = adapter.call("list_children", {"scan_id": scan_id, "node_id": summary["root_id"], "limit": 2})
             assert len(first["items"]) == 2 and first["next_cursor"], first

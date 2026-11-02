@@ -158,6 +158,30 @@ pub struct ScanIssue {
     pub message: String,
 }
 
+/// Progress of the scan job, including an explicitly estimated traversal share.
+/// Directory-task counts cover discovered work, not an advance census of a tree.
+/// The default records the requested root task before filesystem admission.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScanCompletion {
+    pub percentage: u8,
+    pub estimated: bool,
+    pub basis: String,
+    pub discovered_directory_tasks: u64,
+    pub completed_directory_tasks: u64,
+}
+
+impl Default for ScanCompletion {
+    fn default() -> Self {
+        Self {
+            percentage: 0,
+            estimated: true,
+            basis: "discovered_directory_tasks".into(),
+            discovered_directory_tasks: 1,
+            completed_directory_tasks: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ScanProgress {
     pub files: u64,
@@ -165,6 +189,8 @@ pub struct ScanProgress {
     pub bytes: u64,
     pub current_path: String,
     pub phase: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion: Option<ScanCompletion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
