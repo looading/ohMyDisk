@@ -1,6 +1,7 @@
 pub mod api;
 pub mod engine;
 pub mod ipc;
+mod scan_progress;
 mod snapshot_cache;
 mod snapshot_codec;
 pub mod store;

@@ -194,7 +194,13 @@ pub async fn scan_async(
     // All normal paths above consume every JoinSet entry. No abort is used:
     // aborting spawn_blocking would leave an active filesystem worker behind.
     if let Some(error) = failure {
+        builder.counts.phase = "failed".into();
+        progress.send_replace(builder.counts.clone());
         return Err(error);
+    }
+    if !stopped(&cancelled, &stop) {
+        builder.counts.begin_reducing();
+        progress.send_replace(builder.counts.clone());
     }
     let after = observe_after(
         root,
@@ -603,7 +609,14 @@ fn apply_event(
             let admitted = if stopped(cancelled, stop) {
                 None
             } else {
-                builder.add(&work.path, work.parent, info)
+                let admitted = builder.add(&work.path, work.parent, info);
+                if admitted.is_none() {
+                    // A discovered directory may disappear, become a file or
+                    // link, cross a boundary, or repeat an admitted identity.
+                    // Its rejected task is resolved without a DirectoryDone.
+                    builder.counts.complete_directory_task();
+                }
+                admitted
             };
             let _ = reply.send(admitted);
         }
@@ -616,15 +629,23 @@ fn apply_event(
                     Item::Entry(path, info) => {
                         builder.add(&path, Some(parent), info);
                     }
-                    Item::Directory(path) => children.entry(parent).or_default().push(Work {
-                        path,
-                        parent: Some(parent),
-                    }),
+                    Item::Directory(path) => {
+                        builder.counts.discover_directory_task();
+                        children.entry(parent).or_default().push(Work {
+                            path,
+                            parent: Some(parent),
+                        });
+                    }
                     Item::Error(error) => builder.directory_error(parent, &error),
                 }
             }
         }
         Event::DirectoryDone { parent, result } => {
+            // A visitor interrupted by cancellation can also return Ok. Such a
+            // task must remain unresolved instead of claiming full traversal.
+            if !stopped(cancelled, stop) {
+                builder.counts.complete_directory_task();
+            }
             if let Err(error) = result {
                 builder.directory_error(parent, &error);
             }

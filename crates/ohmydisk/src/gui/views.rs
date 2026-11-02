@@ -735,6 +735,7 @@ impl App {
         let compact = self.compact_layout();
         let scans = source_scan_state(&self.scans, path);
         let source_scanning = self.source_scanning(path);
+        let progress = self.source_progress(path, scans.attempt);
         let mut actions = Row::new().spacing(8).align_y(Alignment::Center);
         if let Some(scan) = scans.result {
             actions = actions.push(
@@ -801,23 +802,56 @@ impl App {
         ]
         .spacing(6)
         .width(Length::Fill);
-        if source_scanning && !scans.scanning() {
+        if let Some(job) = self.finished_scan_for_source(path) {
+            let mut summary = vec![state_label(&job.state, self.language).to_owned()];
+            if let Some(progress) = progress {
+                summary.push(progress.label(self.language));
+            }
+            if let Some(elapsed) = job.elapsed_ms {
+                summary.push(format!(
+                    "{} {}",
+                    self.language.text("Total time", "总耗时"),
+                    scan_clock::format_duration(elapsed, self.language)
+                ));
+            }
             info = info.push(
-                text(self.language.text("Starting scan…", "正在开始扫描…"))
+                text(summary.join(" · "))
                     .size(10)
-                    .color(MUTED),
+                    .color(if matches!(job.state.as_str(), "failed" | "interrupted") {
+                        WARNING
+                    } else {
+                        MUTED
+                    })
+                    .width(Length::Fill),
+            );
+        } else if source_scanning && !scans.scanning() {
+            let status = self
+                .active_scan_for_source(path, scans.attempt)
+                .map(|job| job.scan_phase_label(self.language))
+                .unwrap_or(self.language.text("Starting scan…", "正在开始扫描…"));
+            info = info.push(
+                text(match progress {
+                    Some(progress) => format!("{} · {}", status, progress.label(self.language)),
+                    None => status.into(),
+                })
+                .size(10)
+                .color(MUTED),
             );
         } else if let Some(scan) = scans.attempt {
-            let summary = if compact {
-                format!(
+            let status = match progress {
+                Some(progress) => format!(
                     "{} · {}",
                     source_attempt_status(scan, self.language),
-                    self.scan_time_label(scan),
-                )
+                    progress.label(self.language)
+                ),
+                None => source_attempt_status(scan, self.language),
+            };
+            let summary = if compact {
+                format!("{} · {}", status, self.scan_time_label(scan),)
             } else {
                 format!(
                     "{} · {} · {}",
-                    source_attempt_status(scan, self.language),
+                    status,
                     self.scan_time_label(scan),
                     timestamp(scan.created_at),
                 )
@@ -834,6 +868,11 @@ impl App {
                     .size(10)
                     .color(MUTED),
             );
+        }
+        if source_scanning {
+            if let Some(progress) = progress {
+                info = info.push(iced::widget::progress_bar(0.0..=100.0, progress.fill()).girth(3));
+            }
         }
         let mut usage = Column::new().spacing(8);
         if let Some(source) = volume {
@@ -1017,33 +1056,90 @@ impl App {
         let Some(job) = &self.active else {
             return Space::new().into();
         };
+        let mut information = column![
+            row![
+                text(job_label(&job.work, self.language))
+                    .size(12)
+                    .color(GREEN),
+                Space::new().width(Length::Fill),
+                text(format!(
+                    "{} {}",
+                    self.language.text("Elapsed", "已用时"),
+                    scan_clock::format_duration(job.clock.elapsed_ms(), self.language)
+                ))
+                .size(11)
+                .color(WHITE)
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+        ]
+        .spacing(5)
+        .width(Length::Fill);
+        if matches!(job.work, Work::Scan | Work::Refresh) {
+            let progress = scan_progress::Presentation::active(
+                job.scan_progress
+                    .as_ref()
+                    .and_then(|progress| progress.completion.as_ref()),
+            );
+            let phase = job.scan_phase_label(self.language);
+            information = information
+                .push(
+                    row![
+                        text(progress.label(self.language)).size(11).color(WHITE),
+                        Space::new().width(Length::Fill),
+                        text(phase).size(10).color(MUTED)
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                )
+                .push(iced::widget::progress_bar(0.0..=100.0, progress.fill()).girth(4));
+            if let Some(raw) = &job.scan_progress {
+                information = information.push(
+                    text(format!(
+                        "{} {} · {} {}",
+                        raw.files,
+                        self.language.text("files", "个文件"),
+                        raw.directories,
+                        self.language.text("folders", "个文件夹")
+                    ))
+                    .size(10)
+                    .color(MUTED)
+                    .width(Length::Fill),
+                );
+                if !raw.current_path.is_empty() {
+                    information = information.push(
+                        text(crop(
+                            &raw.current_path,
+                            if self.compact_layout() { 34 } else { 84 },
+                        ))
+                        .size(10)
+                        .color(MUTED)
+                        .width(Length::Fill),
+                    );
+                }
+            } else {
+                information = information.push(
+                    text(job.progress.get(self.language))
+                        .size(10)
+                        .color(MUTED)
+                        .width(Length::Fill),
+                );
+            }
+        } else {
+            information = information.push(
+                text(format!(
+                    "{} · {}",
+                    state_label(&job.state, self.language),
+                    job.progress.get(self.language)
+                ))
+                .size(11)
+                .color(MUTED)
+                .width(Length::Fill),
+            );
+        }
         container(
             row![
-                column![
-                    row![
-                        text(job_label(&job.work, self.language))
-                            .size(12)
-                            .color(GREEN),
-                        Space::new().width(Length::Fill),
-                        text(format!(
-                            "{} {}",
-                            self.language.text("Elapsed", "已用时"),
-                            scan_clock::format_duration(job.clock.elapsed_ms(), self.language)
-                        ))
-                        .size(12)
-                        .color(WHITE)
-                    ]
-                    .align_y(Alignment::Center),
-                    text(format!(
-                        "{} · {}",
-                        state_label(&job.state, self.language),
-                        job.progress.get(self.language)
-                    ))
-                    .size(11)
-                    .color(MUTED)
-                ]
-                .spacing(5)
-                .width(Length::Fill),
+                information,
                 button(
                     text(if job.state == "cancel_requested" {
                         self.language.text("Stopping…", "正在停止…")
@@ -1262,6 +1358,12 @@ impl App {
         };
         let compact = self.compact_layout();
         let short = self.short_layout();
+        let mut timing = column![text(self.scan_time_label(scan)).size(10).color(MUTED)]
+            .spacing(3)
+            .align_x(Alignment::End);
+        if let Some(progress) = self.displayed_scan_progress(scan) {
+            timing = timing.push(text(progress.label(self.language)).size(10).color(MUTED));
+        }
         let title = column![
             row![
                 text(crop(
@@ -1273,7 +1375,7 @@ impl App {
                 ))
                 .size(if compact { 18 } else { 22 })
                 .width(Length::Fill),
-                text(self.scan_time_label(scan)).size(10).color(MUTED)
+                timing
             ]
             .spacing(8)
             .align_y(Alignment::Center),

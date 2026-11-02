@@ -5,6 +5,7 @@ pub mod query;
 pub mod query_index;
 pub mod scan;
 pub mod scan_concurrency;
+mod scan_progress;
 pub mod space;
 pub use model::*;
 pub use platform::{DirectoryEvent, Platform, ScanEntry};

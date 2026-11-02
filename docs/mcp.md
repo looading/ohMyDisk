@@ -241,6 +241,29 @@ R：共享、系统及未归属空间
 4-worker 的四倍；目录密集样本则适合手动增加并发。方法、原始数据和限制见
 [4／8／CPU 三路基准](../benchmarks/PERFORMANCE-AUTO-2026-11-02.md)。
 
+扫描进度由 `omd_get_job.progress.completion` 返回，扫描摘要的 `progress` 也保留同一份数据：
+
+```json
+{
+  "percentage": 42,
+  "estimated": true,
+  "basis": "discovered_directory_tasks",
+  "discovered_directory_tasks": 100,
+  "completed_directory_tasks": 47
+}
+```
+
+首次遍历无法预先知道尚未发现的子目录规模。扫描器只在原有遍历中计数，使用已发现目录任务的
+完成比例形成不倒退的估算，并为后处理保留进度；不会为了百分比额外扫描一遍。
+`discovered_directory_tasks` 是目前发现的目录任务数，包含随后因权限、身份或文件系统边界被拒绝的候选，
+不是整棵目录树的最终目录总数。估算不代表已扫描文件的精确比例或剩余时间，新发现大量目录时可能停顿。
+
+排队为 0%，遍历最多 90%；排队、汇总（90%）、保存（95%）和索引（98%）使用
+`basis: "phase_checkpoint"` 且仍标记为估算。只有完整快照保存、索引和发布都成功后，才返回
+`percentage: 100`、`estimated: false`、`basis: "finished"`。
+部分结果、停止、失败和中断保留最后的低于 100% 的估算；保存停止后的部分结果不会继续提高百分比。
+旧后台或历史记录缺少 `completion` 时表示进度未知，客户端不应自行补为 100%。
+
 
 查询响应就地返回 `size_semantics`、`measurement_status`、`reconciliation_status`
 和 `attribution_provider`，不应仅凭一个 attributed 数字宣称当前容量已对账。
